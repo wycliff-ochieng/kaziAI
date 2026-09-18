@@ -1,0 +1,10 @@
+*.md
+__pycache__/
+node_modules/
+.venv/
+venv/
+.pytest_cache/
+.env
+tmp_bin
+.next/
+*.pyc
