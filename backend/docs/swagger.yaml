@@ -1,0 +1,41 @@
+basePath: /api/v1
+host: localhost:3000
+info:
+  contact: {}
+  description: The primary Go gateway connecting frontends to ERPs and AI Engines.
+  title: ERPAgent Gateway API
+  version: "1.0"
+paths:
+  /health:
+    get:
+      description: returns system health status
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: System Health
+      tags:
+      - System
+  /intents:
+    post:
+      consumes:
+      - application/json
+      description: send command to AI engine
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Parse intent
+      tags:
+      - AI
+swagger: "2.0"
