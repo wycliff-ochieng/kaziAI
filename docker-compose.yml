@@ -1,0 +1,75 @@
+
+services:
+  go_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "3001:3000"
+    environment:
+      - PORT=3000
+      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/erpagent?sslmode=disable
+      - REDIS_URL=redis:6379
+      - AI_ENGINE_URL=http://ai_engine:8000
+      - AI_ENGINE_GRPC=ai_engine:50051
+      - DEFAULT_ERP_TYPE=ODOO
+      - ODOO_URL=http://host.docker.internal:8569
+      - ODOO_DB=vivace-prod
+      - ODOO_USER=management@vivace.co.ke
+      - ODOO_PASSWORD=Mobipine123!
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - postgres
+      - redis
+      - ai_engine
+    networks:
+      - erp_net
+
+  ai_engine:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000" # FastAPI
+      - "50051:50051" # gRPC
+    environment:
+      - ENVIRONMENT=development
+    networks:
+      - erp_net
+
+  postgres:
+    image: ankane/pgvector:v0.5.1
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: erpagent
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - erp_net
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - erp_net
+
+  vault:
+    image: hashicorp/vault:1.15
+    environment:
+      VAULT_DEV_ROOT_TOKEN_ID: dev-only-token
+    ports:
+      - "8200:8200"
+    networks:
+      - erp_net
+
+volumes:
+  pgdata:
+
+networks:
+  erp_net:
+    driver: bridge
