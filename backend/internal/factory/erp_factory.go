@@ -59,6 +59,12 @@ func GetERPConnector(cfg TenantConfig) (domain.ERPConnector, error) {
 	case "MOCK", "":
 		return defaultMockAdapter, nil
 
+	case "POSTGRES", "MYSQL", "SAP", "DYNAMICS":
+		// These connector types are listed for UI/save compatibility but have
+		// no Go-side implementation. Returning a mock here would silently fake
+		// success against a real ERP, so fail explicitly instead.
+		return nil, fmt.Errorf("ERP type %s is saved but not implemented by this server", erpType)
+
 	default:
 		return nil, fmt.Errorf("unsupported or unimplemented ERP type: %s", erpType)
 	}
