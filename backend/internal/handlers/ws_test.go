@@ -10,8 +10,8 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/audit"
+	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/domain"
 	"erpagent-backend/internal/realtime"
@@ -59,11 +59,11 @@ func TestUIBlocksForChat(t *testing.T) {
 		RequiresConfirmation: true,
 		ConfirmationPrompt:   "Draft?",
 		DryRun: &domain.DryRunResult{
-			Operation:          "CREATE_RFQ",
-			ImpactSummary:      "impact",
-			RiskLevel:          domain.RiskLow,
+			Operation:            "CREATE_RFQ",
+			ImpactSummary:        "impact",
+			RiskLevel:            domain.RiskLow,
 			RequiresConfirmation: true,
-			ConfirmationPrompt: "Draft?",
+			ConfirmationPrompt:   "Draft?",
 		},
 	}
 	blocks := uiBlocksForChat(dryResp)
@@ -114,35 +114,61 @@ func mockAIEngineStub(t *testing.T) *httptest.Server {
 		lower := strings.ToLower(prompt)
 
 		intent := "UNKNOWN"
-		params := map[string]any{}
-		validation := map[string]any{"requires_user_approval": false}
 		action := "READ"
+		response := "Could not map this request to an ERP action."
+		body := map[string]any{
+			"response":    response,
+			"intent_type": intent,
+			"action_type": action,
+		}
 
 		switch {
 		case strings.Contains(lower, "vendor"):
-			intent = "GET_VENDORS"
+			body = map[string]any{
+				"response":    "Found 1 vendors.",
+				"intent_type": "GET_VENDORS",
+				"action_type": "READ",
+				"data": []any{
+					map[string]any{"id": "1", "name": "ABC", "email": "sales@abc.test"},
+				},
+			}
 		case strings.Contains(lower, "chair"):
-			intent = "CREATE_RFQ"
-			action = "WRITE"
-			params = map[string]any{
+			params := map[string]any{
 				"vendor_name":  "ABC",
 				"product_name": "Chair",
 				"quantity":     10.0,
 				"lines":        []any{map[string]any{"product_name": "Chair", "quantity": 10.0}},
-				"dry_run":      true,
+				"dry_run":      false,
 			}
-			validation = map[string]any{"requires_user_approval": true, "risk_level": "LOW", "approval_prompt": "Draft RFQ?"}
+			body = map[string]any{
+				"response":              "Draft RFQ preview for 10 Chair from ABC.",
+				"intent_type":           "CREATE_RFQ",
+				"action_type":           "WRITE",
+				"requires_confirmation": true,
+				"confirmation_prompt":   "Draft RFQ?",
+				"plan": map[string]any{"steps": []any{
+					map[string]any{"intent_type": "CREATE_RFQ", "parameters": params},
+				}},
+				"dry_run": map[string]any{
+					"is_dry_run":            true,
+					"operation":             "CREATE_RFQ",
+					"impact_summary":        "Draft RFQ for 10 Chair from ABC.",
+					"risk_level":            "LOW",
+					"requires_confirmation": true,
+					"confirmation_prompt":   "Draft RFQ?",
+				},
+			}
+		}
+
+		if got := r.URL.Path; got != "/api/v1/process" {
+			t.Errorf("expected /api/v1/process, got %s", got)
+		}
+		if tid, _ := req["thread_id"].(string); !strings.HasPrefix(tid, "t1:") {
+			t.Errorf("expected tenant-scoped thread id, got %v", req["thread_id"])
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"intent_type": intent,
-			"confidence":  0.95,
-			"action_type": action,
-			"summary":     "stub",
-			"parameters":  params,
-			"validation":  validation,
-		})
+		_ = json.NewEncoder(w).Encode(body)
 	}))
 }
 
