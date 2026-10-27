@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/gorilla/mux"
 	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/domain"
+	"github.com/gorilla/mux"
 )
 
 func GetVendors(cfg *config.Config) http.HandlerFunc {
