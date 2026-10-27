@@ -2,6 +2,7 @@ package mock
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"erpagent-backend/internal/domain"
@@ -172,5 +173,32 @@ func TestMockAdapter_MissingRecordsReturnErrors(t *testing.T) {
 	}
 	if _, err := a.CreateCreditNote(ctx, domain.CreditNoteRequest{InvoiceID: "NOPE"}); err == nil {
 		t.Errorf("expected error for credit note on missing invoice")
+	}
+}
+
+func TestMockAdapter_DryRunDoesNotConsumeSequence(t *testing.T) {
+	a := NewMockERPAdapter()
+	ctx := context.Background()
+	req := domain.CreatePurchaseOrderRequest{
+		VendorID: "20",
+		Lines:    []domain.CreatePurchaseOrderLineRequest{{ProductID: "101", Quantity: 1}},
+	}
+
+	req.DryRun = true
+	preview, err := a.CreateRFQ(ctx, req)
+	if err != nil {
+		t.Fatalf("dry-run RFQ failed: %v", err)
+	}
+	if preview.DryRun == nil {
+		t.Fatalf("expected dry-run payload")
+	}
+
+	req.DryRun = false
+	live, err := a.CreateRFQ(ctx, req)
+	if err != nil {
+		t.Fatalf("live RFQ failed: %v", err)
+	}
+	if !strings.Contains(preview.DryRun.ImpactSummary, live.RecordNumber) {
+		t.Fatalf("preview %q does not match live number %q", preview.DryRun.ImpactSummary, live.RecordNumber)
 	}
 }
