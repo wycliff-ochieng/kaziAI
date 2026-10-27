@@ -227,7 +227,7 @@ export function SettingsView() {
 
   return (
     <div className="flex-1 overflow-y-auto p-8">
-      <h2 className="mb-4 text-lg font-semibold tracking-tight">ERP Connectors</h2>
+      <h2 className="mb-4 text-lg font-semibold tracking-tight">Connectors</h2>
       {error && <p className="mb-3 text-sm text-rose-600">{error}</p>}
       {loading ? (
         <p className="text-sm text-slate-400">Loading…</p>
@@ -267,13 +267,26 @@ export function SettingsView() {
         <div className="grid grid-cols-2 gap-3">
           <input className={input} placeholder="Name (default)" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <select className={input} value={form.erp_type} onChange={(e) => setForm({ ...form, erp_type: e.target.value })}>
-            <option>MOCK</option>
-            <option>ODOO</option>
+            <option value="MOCK">MOCK</option>
+            <option value="ODOO">ODOO</option>
+            <option value="POSTGRES">POSTGRES DB</option>
+            <option value="MYSQL">MYSQL DB</option>
+            <option value="SAP">SAP</option>
+            <option value="DYNAMICS">DYNAMICS 365</option>
           </select>
-          <input className={input} placeholder="Base URL (e.g. http://host:8069)" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-          <input className={input} placeholder="Database" value={form.db_name} onChange={(e) => setForm({ ...form, db_name: e.target.value })} />
-          <input className={input} placeholder="Username" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
-          <input className={input} type="password" placeholder="Password / API key" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+          {["POSTGRES", "MYSQL"].includes(form.erp_type) ? (
+            <>
+              <input className={`${input} col-span-2`} placeholder="Database URL (e.g. postgres://user:pass@host/db)" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+              <input className={`${input} col-span-2`} type="password" placeholder="Additional Credentials (if not in URL)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </>
+          ) : (
+            <>
+              <input className={input} placeholder="Base URL / API endpoint" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+              <input className={input} placeholder="Database / Tenant ID" value={form.db_name} onChange={(e) => setForm({ ...form, db_name: e.target.value })} />
+              <input className={input} placeholder="Username / Client ID" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+              <input className={input} type="password" placeholder="Password / API key" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+            </>
+          )}
         </div>
         {testMsg && <p className="mt-3 text-xs text-slate-600">{testMsg}</p>}
         <div className="mt-3 flex gap-2">
