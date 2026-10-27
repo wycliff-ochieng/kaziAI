@@ -107,6 +107,7 @@ func (m *MockERPAdapter) seedData() {
 		AmountTotal:  2500.00,
 		AmountDue:    2500.00,
 		Status:       "posted",
+		PaymentState: "not_paid",
 		DueDate:      time.Now().Add(-10 * 24 * time.Hour), // Overdue
 		ETIMSStatus:  "pending",
 	}
@@ -195,6 +196,16 @@ func (m *MockERPAdapter) GetSaleOrders(ctx context.Context, filter domain.SaleOr
 			continue
 		}
 		result = append(result, o)
+	}
+
+	if filter.Offset > 0 {
+		if filter.Offset >= len(result) {
+			return []domain.SaleOrder{}, nil
+		}
+		result = result[filter.Offset:]
+	}
+	if filter.Limit > 0 && len(result) > filter.Limit {
+		result = result[:filter.Limit]
 	}
 	return result, nil
 }
@@ -303,13 +314,13 @@ func (m *MockERPAdapter) CreateSaleOrder(ctx context.Context, req domain.CreateS
 	tax := untaxedTotal * 0.16
 	total := untaxedTotal + tax
 
-	m.orderSeq++
-	orderID := fmt.Sprintf("%d", m.orderSeq)
+	nextSeq := m.orderSeq + 1
+	orderID := fmt.Sprintf("%d", nextSeq)
 	orderPrefix := "SO"
 	if req.IsQuotation {
 		orderPrefix = "QUO"
 	}
-	orderNo := fmt.Sprintf("%s%03d", orderPrefix, m.orderSeq)
+	orderNo := fmt.Sprintf("%s%03d", orderPrefix, nextSeq)
 
 	state := "draft"
 
@@ -352,6 +363,7 @@ func (m *MockERPAdapter) CreateSaleOrder(ctx context.Context, req domain.CreateS
 		}, nil
 	}
 
+	m.orderSeq = nextSeq
 	m.orders[orderID] = order
 
 	return &domain.ActionResult{
@@ -507,9 +519,9 @@ func (m *MockERPAdapter) CreateInvoice(ctx context.Context, orderID string, dryR
 		return nil, err
 	}
 
-	m.invSeq++
-	invID := fmt.Sprintf("%d", m.invSeq)
-	invNo := fmt.Sprintf("INV/2026/%04d", m.invSeq)
+	nextSeq := m.invSeq + 1
+	invID := fmt.Sprintf("%d", nextSeq)
+	invNo := fmt.Sprintf("INV/2026/%04d", nextSeq)
 
 	inv := domain.Invoice{
 		ID:           invID,
@@ -521,6 +533,7 @@ func (m *MockERPAdapter) CreateInvoice(ctx context.Context, orderID string, dryR
 		AmountTotal:  order.AmountTotal,
 		AmountDue:    order.AmountTotal,
 		Status:       "draft",
+		PaymentState: "not_paid",
 		DueDate:      time.Now().Add(30 * 24 * time.Hour),
 		ETIMSStatus:  "pending",
 	}
@@ -543,6 +556,7 @@ func (m *MockERPAdapter) CreateInvoice(ctx context.Context, orderID string, dryR
 		}, nil
 	}
 
+	m.invSeq = nextSeq
 	m.invoices[invID] = inv
 	return &domain.ActionResult{
 		Success:      true,
@@ -757,7 +771,28 @@ func (m *MockERPAdapter) GetInvoices(ctx context.Context, filter domain.InvoiceF
 		if filter.Status != "" && !strings.EqualFold(inv.Status, filter.Status) {
 			continue
 		}
+		if filter.PaymentState != "" && !strings.EqualFold(inv.PaymentState, filter.PaymentState) {
+			continue
+		}
+		if filter.OrderID != "" && !strings.EqualFold(inv.OrderID, filter.OrderID) {
+			continue
+		}
+		if filter.Overdue {
+			if inv.AmountDue <= 0 || !inv.DueDate.Before(time.Now()) {
+				continue
+			}
+		}
 		result = append(result, inv)
+	}
+
+	if filter.Offset > 0 {
+		if filter.Offset >= len(result) {
+			return []domain.Invoice{}, nil
+		}
+		result = result[filter.Offset:]
+	}
+	if filter.Limit > 0 && len(result) > filter.Limit {
+		result = result[:filter.Limit]
 	}
 	return result, nil
 }
@@ -769,7 +804,7 @@ func (m *MockERPAdapter) GetOverdueInvoices(ctx context.Context, minAmount float
 	var overdue []domain.Invoice
 	now := time.Now()
 	for _, inv := range m.invoices {
-		if inv.AmountDue >= minAmount && inv.DueDate.Before(now) {
+		if inv.AmountDue > minAmount && inv.DueDate.Before(now) {
 			overdue = append(overdue, inv)
 		}
 	}
@@ -946,9 +981,9 @@ func (m *MockERPAdapter) CreateRFQ(ctx context.Context, req domain.CreatePurchas
 	tax := untaxedTotal * 0.16
 	total := untaxedTotal + tax
 
-	m.poSeq++
-	orderID := fmt.Sprintf("%d", m.poSeq)
-	orderNo := fmt.Sprintf("PO%05d", m.poSeq)
+	nextSeq := m.poSeq + 1
+	orderID := fmt.Sprintf("%d", nextSeq)
+	orderNo := fmt.Sprintf("PO%05d", nextSeq)
 
 	order := domain.PurchaseOrder{
 		ID:            orderID,
@@ -983,6 +1018,7 @@ func (m *MockERPAdapter) CreateRFQ(ctx context.Context, req domain.CreatePurchas
 		}, nil
 	}
 
+	m.poSeq = nextSeq
 	m.purchaseOrders[orderID] = order
 
 	return &domain.ActionResult{
@@ -1012,13 +1048,13 @@ func (m *MockERPAdapter) ConfirmPurchaseOrder(ctx context.Context, orderID strin
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: PO %s (%s) is ready to confirm.", order.OrderNo, order.VendorName),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CONFIRM_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Confirming PO %s will update state from '%s' to 'purchase' (Confirmed), committing $%.2f spend with %s.", order.OrderNo, order.State, order.AmountTotal, order.VendorName),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Confirming PO %s commits $%.2f with %s. Do you want to proceed?", order.OrderNo, order.AmountTotal, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_PO_%s_%d", order.ID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CONFIRM_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Confirming PO %s will update state from '%s' to 'purchase' (Confirmed), committing $%.2f spend with %s.", order.OrderNo, order.State, order.AmountTotal, order.VendorName),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Confirming PO %s commits $%.2f with %s. Do you want to proceed?", order.OrderNo, order.AmountTotal, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_PO_%s_%d", order.ID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -1055,13 +1091,13 @@ func (m *MockERPAdapter) CancelPurchaseOrder(ctx context.Context, orderID string
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: RFQ %s cancellation preview.", order.OrderNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CANCEL_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Cancelling RFQ %s will void the draft request to %s.", order.OrderNo, order.VendorName),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("CAUTION: Cancel RFQ %s to %s? This voids the draft.", order.OrderNo, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_CANCEL_PO_%s_%d", order.ID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CANCEL_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Cancelling RFQ %s will void the draft request to %s.", order.OrderNo, order.VendorName),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("CAUTION: Cancel RFQ %s to %s? This voids the draft.", order.OrderNo, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_CANCEL_PO_%s_%d", order.ID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -1096,13 +1132,13 @@ func (m *MockERPAdapter) ReceivePurchaseOrder(ctx context.Context, orderID strin
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Full receipt preview for PO %s.", order.OrderNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "RECEIVE_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Receiving PO %s will validate the full inbound picking and increase inventory stock (v1: full receipt only, no partials/backorders).", order.OrderNo),
-				RiskLevel:             domain.RiskHigh,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Receive ALL lines of PO %s from %s into stock? (Full receipt only.)", order.OrderNo, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_RECEIPT_%s_%d", order.ID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "RECEIVE_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Receiving PO %s will validate the full inbound picking and increase inventory stock (v1: full receipt only, no partials/backorders).", order.OrderNo),
+				RiskLevel:            domain.RiskHigh,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Receive ALL lines of PO %s from %s into stock? (Full receipt only.)", order.OrderNo, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_RECEIPT_%s_%d", order.ID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -1178,14 +1214,14 @@ func (m *MockERPAdapter) CreateVendorBill(ctx context.Context, orderID string, d
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Vendor bill %s preview (auto-copied from PO %s).", billNo, order.OrderNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CREATE_VENDOR_BILL",
-				ImpactSummary:         fmt.Sprintf("Drafting vendor bill %s from PO %s (Total: $%.2f, auto-copied lines, no edits in v1).", billNo, order.OrderNo, order.AmountTotal),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Draft vendor bill %s for $%.2f from PO %s?", billNo, bill.AmountTotal, order.OrderNo),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_BILL_%s_%d", billID, time.Now().Unix()),
-				SimulatedInvoice:      nil,
+				IsDryRun:             true,
+				Operation:            "CREATE_VENDOR_BILL",
+				ImpactSummary:        fmt.Sprintf("Drafting vendor bill %s from PO %s (Total: $%.2f, auto-copied lines, no edits in v1).", billNo, order.OrderNo, order.AmountTotal),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Draft vendor bill %s for $%.2f from PO %s?", billNo, bill.AmountTotal, order.OrderNo),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_BILL_%s_%d", billID, time.Now().Unix()),
+				SimulatedInvoice:     nil,
 			},
 		}, nil
 	}
@@ -1226,13 +1262,13 @@ func (m *MockERPAdapter) PostVendorBill(ctx context.Context, billID string, dryR
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Posting vendor bill %s preview.", bill.BillNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "POST_VENDOR_BILL",
-				ImpactSummary:         fmt.Sprintf("Posting vendor bill %s will finalize accounting entry for $%.2f (post-only in v1, no payment execution).", bill.BillNo, bill.AmountTotal),
-				RiskLevel:             domain.RiskHigh,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Post vendor bill %s for $%.2f? (Posts journal only, no payment.)", bill.BillNo, bill.AmountTotal),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_POST_BILL_%s_%d", bill.ID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "POST_VENDOR_BILL",
+				ImpactSummary:        fmt.Sprintf("Posting vendor bill %s will finalize accounting entry for $%.2f (post-only in v1, no payment execution).", bill.BillNo, bill.AmountTotal),
+				RiskLevel:            domain.RiskHigh,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Post vendor bill %s for $%.2f? (Posts journal only, no payment.)", bill.BillNo, bill.AmountTotal),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_POST_BILL_%s_%d", bill.ID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -1247,4 +1283,27 @@ func (m *MockERPAdapter) PostVendorBill(ctx context.Context, billID string, dryR
 		RecordNumber: bill.BillNo,
 		Data:         bill,
 	}, nil
+}
+
+// CountRecords mirrors the filtered rows the mock would return.
+func (m *MockERPAdapter) CountRecords(ctx context.Context, entity string, filter domain.CountFilter) (int, error) {
+	switch entity {
+	case domain.CountEntityCustomers:
+		customers, err := m.GetCustomers(ctx, domain.CustomerFilter{Search: filter.Search, Limit: 10000})
+		return len(customers), err
+	case domain.CountEntityProducts:
+		products, err := m.GetProducts(ctx, domain.ProductFilter{Search: filter.Search, Limit: 10000})
+		return len(products), err
+	case domain.CountEntityOrders:
+		orders, err := m.GetSaleOrders(ctx, domain.SaleOrderFilter{CustomerID: filter.CustomerID, State: filter.State, Search: filter.Search, Limit: 10000})
+		return len(orders), err
+	case domain.CountEntityInvoices:
+		invoices, err := m.GetInvoices(ctx, domain.InvoiceFilter{CustomerID: filter.CustomerID, Status: filter.State, PaymentState: filter.PaymentState, Overdue: filter.Overdue, Limit: 10000})
+		return len(invoices), err
+	case domain.CountEntityVendors:
+		vendors, err := m.GetVendors(ctx, domain.VendorFilter{Search: filter.Search, Limit: 10000})
+		return len(vendors), err
+	default:
+		return 0, fmt.Errorf("unsupported count entity %q", entity)
+	}
 }
