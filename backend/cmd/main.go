@@ -7,11 +7,11 @@ import (
 
 	"github.com/gorilla/mux"
 
+	"erpagent-backend/internal/audit"
 	"erpagent-backend/internal/config"
+	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/database"
 	"erpagent-backend/internal/handlers"
-	"erpagent-backend/internal/audit"
-	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/realtime"
 	"erpagent-backend/middleware"
 )
@@ -87,6 +87,7 @@ func main() {
 			connStore = cs
 		}
 	}
+	handlers.GlobalConnStore = connStore
 	api.HandleFunc("/ws", handlers.ChatSocket(cfg, chatStore, auditStore, connStore))
 
 	// Protected Subrouter with TenantAuth Middleware
@@ -100,8 +101,11 @@ func main() {
 	// Sales App REST API Endpoints
 	sales := protected.PathPrefix("/sales").Subrouter()
 	sales.HandleFunc("/customers", handlers.GetCustomers(cfg)).Methods(http.MethodGet)
+	sales.HandleFunc("/customers/count", handlers.CountCustomers(cfg)).Methods(http.MethodGet)
 	sales.HandleFunc("/products", handlers.GetProducts(cfg)).Methods(http.MethodGet)
+	sales.HandleFunc("/products/count", handlers.CountProducts(cfg)).Methods(http.MethodGet)
 	sales.HandleFunc("/orders", handlers.GetSaleOrders(cfg)).Methods(http.MethodGet)
+	sales.HandleFunc("/orders/count", handlers.CountSaleOrders(cfg)).Methods(http.MethodGet)
 	sales.HandleFunc("/orders", handlers.CreateSaleOrder(cfg)).Methods(http.MethodPost)
 	sales.HandleFunc("/orders/{id}", handlers.GetSaleOrderByID(cfg)).Methods(http.MethodGet)
 	sales.HandleFunc("/orders/{id}/confirm", handlers.ConfirmSaleOrder(cfg)).Methods(http.MethodPost)
@@ -109,11 +113,13 @@ func main() {
 	sales.HandleFunc("/orders/{id}/deliver", handlers.DeliverSaleOrder(cfg)).Methods(http.MethodPost)
 	sales.HandleFunc("/orders/{id}/invoice", handlers.CreateInvoice(cfg)).Methods(http.MethodPost)
 	sales.HandleFunc("/invoices", handlers.GetInvoices(cfg)).Methods(http.MethodGet)
+	sales.HandleFunc("/invoices/count", handlers.CountInvoices(cfg)).Methods(http.MethodGet)
 	sales.HandleFunc("/invoices/{id}/post", handlers.PostInvoice(cfg)).Methods(http.MethodPost)
 
 	// Purchase App REST API Endpoints (canonical; ERP mapping lives in adapters)
 	purchase := protected.PathPrefix("/purchase").Subrouter()
 	purchase.HandleFunc("/vendors", handlers.GetVendors(cfg)).Methods(http.MethodGet)
+	purchase.HandleFunc("/vendors/count", handlers.CountVendors(cfg)).Methods(http.MethodGet)
 	purchase.HandleFunc("/orders", handlers.GetPurchaseOrders(cfg)).Methods(http.MethodGet)
 	purchase.HandleFunc("/orders", handlers.CreateRFQ(cfg)).Methods(http.MethodPost)
 	purchase.HandleFunc("/orders/{id}", handlers.GetPurchaseOrderByID(cfg)).Methods(http.MethodGet)
