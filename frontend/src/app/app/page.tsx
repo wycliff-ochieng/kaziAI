@@ -23,6 +23,9 @@ import {
 } from "@/lib/ws";
 import { RenderBlock } from "@/components/registry";
 import { AuditView, SettingsView } from "@/components/admin";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { GenerativeDataTable } from "@/components/ai/generative-data-table";
 
 type View = "chat" | "approvals" | "activity" | "audit" | "settings";
 
@@ -35,6 +38,48 @@ const SUGGESTIONS = [
 
 let turnSeq = 1;
 
+// ui.md clean-reply: embedded Generative UI payload in text channel.
+// Parses out {"ui_component":"DATA_TABLE",...} so the text bubble never
+// collapses into a single-line `ID | Name | ...` string.
+function parseGenerativeReply(text: string) {
+  let payload: {
+    ui_component?: string;
+    title?: string;
+    columns?: string[];
+    data?: Record<string, unknown>[];
+    system_source?: string;
+  } | null = null;
+  let display = text || "";
+  if (display.includes('"ui_component"')) {
+    try {
+      const match = display.match(/\{[\s\S]*"ui_component"\s*:\s*"DATA_TABLE"[\s\S]*\}/);
+      if (match) {
+        payload = JSON.parse(match[0]);
+        display = display.replace(match[0], "").replace(/```json|```/g, "").trim();
+      }
+    } catch {
+      // keep raw text fallback
+    }
+  }
+  return { payload, display };
+}
+
+function getOrCreateConvId(): string {
+  if (typeof window !== "undefined") {
+    const saved = window.localStorage.getItem("kazi_conv_id");
+    if (saved) return saved;
+    const fresh =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `conv-${Date.now()}`;
+    window.localStorage.setItem("kazi_conv_id", fresh);
+    return fresh;
+  }
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `conv-${Date.now()}`;
+}
+
 export default function WorkspacePage() {
   const [view, setView] = useState<View>("chat");
   const [panelCollapsed, setPanelCollapsed] = useState(false);
@@ -46,11 +91,7 @@ export default function WorkspacePage() {
   const [pendingApprovals, setPendingApprovals] = useState(0);
 
   const handleRef = useRef<SocketHandle | null>(null);
-  const convRef = useRef(
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `conv-${Date.now()}`
-  );
+  const convRef = useRef<string>(getOrCreateConvId());
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const latestPendingTurn = useMemo(() => {
@@ -323,20 +364,38 @@ export default function WorkspacePage() {
                   </div>
                 </div>
               )}
-              {turns.map((t) => (
+              {turns.map((t) => {
+                const { payload, display } =
+                  t.role === "assistant"
+                    ? parseGenerativeReply(t.text || "")
+                    : { payload: null, display: t.text || "" };
+                return (
                 <div key={t.id} className={`flex ${t.role === "user" ? "justify-end" : "justify-start"}`}>
                   <div className={`max-w-[85%] space-y-2 ${t.role === "user" ? "" : "w-full"}`}>
-                    {t.text && (
+                    {payload && payload.ui_component === "DATA_TABLE" && (
+                      <GenerativeDataTable
+                        title={payload.title || "Results"}
+                        columns={payload.columns || []}
+                        data={payload.data || []}
+                        systemSource={payload.system_source || "Odoo v19"}
+                      />
+                    )}
+                    {display && t.role === "user" && (
+                      <div className="inline-block rounded-xl px-3.5 py-2 text-sm leading-relaxed bg-slate-900 text-white">
+                        {display}
+                      </div>
+                    )}
+                    {display && t.role === "assistant" && (
                       <div
-                        className={`inline-block rounded-xl px-3.5 py-2 text-sm leading-relaxed ${
-                          t.role === "user"
-                            ? "bg-slate-900 text-white"
-                            : t.error
-                              ? "border border-rose-200 bg-rose-50 text-rose-700"
-                              : "border border-slate-200 bg-slate-50 text-slate-800"
+                        className={`inline-block w-full rounded-xl px-3.5 py-2 text-sm leading-relaxed whitespace-pre-wrap ${
+                          t.error
+                            ? "border border-rose-200 bg-rose-50 text-rose-700"
+                            : "border border-slate-200 bg-slate-50 text-slate-800"
                         }`}
                       >
-                        {t.text}
+                        <div className="prose prose-sm prose-slate max-w-none whitespace-pre-wrap [&_table]:w-full [&_table]:text-xs">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{display}</ReactMarkdown>
+                        </div>
                       </div>
                     )}
                     {t.blocks.map((b, i) => (
@@ -355,7 +414,8 @@ export default function WorkspacePage() {
                     )}
                   </div>
                 </div>
-              ))}
+                );
+              })}
               {status && <p className="text-xs text-slate-400">{status}…</p>}
               <div ref={bottomRef} />
             </div>
