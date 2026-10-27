@@ -25,8 +25,9 @@ class Settings(BaseSettings):
     SESSION_TTL_SECONDS: int = 1800
     
     # Backend Integrations
-    BACKEND_API_URL: str = "http://localhost:8080/api/v1"
-    ODOO_URL: str = "http://localhost:8069"
+    BACKEND_API_URL: str = "http://localhost:3001"
+    INTERNAL_API_TOKEN: str = ""
+    ODOO_URL: str = ""
     
     model_config = SettingsConfigDict(env_file=ENV_PATH, env_file_encoding="utf-8", extra="ignore")
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"erpagent-backend/internal/audit"
+	"erpagent-backend/internal/auth"
+	"erpagent-backend/internal/chathistory"
 	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/domain"
@@ -163,7 +166,7 @@ func mockAIEngineStub(t *testing.T) *httptest.Server {
 		if got := r.URL.Path; got != "/api/v1/process" {
 			t.Errorf("expected /api/v1/process, got %s", got)
 		}
-		if tid, _ := req["thread_id"].(string); !strings.HasPrefix(tid, "t1:") {
+		if tid, _ := req["thread_id"].(string); tid == "" || !strings.Contains(tid, ":") {
 			t.Errorf("expected tenant-scoped thread id, got %v", req["thread_id"])
 		}
 
@@ -243,7 +246,7 @@ func TestChatSocket_ConversationalApprovalFlow(t *testing.T) {
 	store := realtime.NewMemoryStore()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", ChatSocket(cfg, store, audit.NewMemoryStore(), connectors.NewMemoryStore()))
+	mux.HandleFunc("/ws", ChatSocket(cfg, store, audit.NewMemoryStore(), connectors.NewMemoryStore(), nil, nil))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
@@ -283,5 +286,46 @@ func TestChatSocket_ConversationalApprovalFlow(t *testing.T) {
 	text, _ = turnTextAndBlocks(readTurn(t, conn))
 	if !strings.Contains(text, "Could not map") {
 		t.Errorf("expected unknown-intent fallthrough, got %q", text)
+	}
+}
+
+func TestChatSocketPersistsHistoryForSessionUser(t *testing.T) {
+	aiStub := mockAIEngineStub(t)
+	defer aiStub.Close()
+
+	authStore := auth.NewMemoryStore()
+	user := auth.User{ID: "usr_history", TenantID: "tenant_history", Email: "h@example.com", Name: "History"}
+	if err := authStore.CreateUser(context.Background(), user, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	token, err := authStore.CreateSession(context.Background(), user.ID, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	historyStore := chathistory.NewMemoryStore()
+
+	cfg := &config.Config{AIEngineURL: aiStub.URL, Environment: "production"}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/ws", ChatSocket(cfg, realtime.NewMemoryStore(), audit.NewMemoryStore(), connectors.NewMemoryStore(), authStore, historyStore))
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws?conversation_id=c-history&erp_type=MOCK"
+	dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+	conn, _, err := dialer.Dial(wsURL, http.Header{"Cookie": {auth.SessionCookieName + "=" + token}})
+	if err != nil {
+		t.Fatalf("ws dial failed: %v", err)
+	}
+	defer conn.Close()
+
+	chatSend(t, conn, "c-history", "show vendors")
+	readTurn(t, conn)
+
+	msgs, err := historyStore.GetMessages(context.Background(), user.TenantID, user.ID, "c-history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(msgs) != 2 || msgs[0].Role != "user" || msgs[1].Role != "assistant" {
+		t.Fatalf("expected persisted user+assistant messages, got %#v", msgs)
 	}
 }

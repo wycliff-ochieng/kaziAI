@@ -4,22 +4,28 @@ import React, { useEffect } from "react";
 import Link from "next/link";
 import { Bot, LogOut, CheckCircle2 } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { useAuth } from "@/lib/auth";
 
 export default function LogoutPage() {
   const router = useRouter();
+  const { logout } = useAuth();
 
   useEffect(() => {
-    // In a real app, clear tokens, user state, etc. here
-    const timer = setTimeout(() => {
-      router.push("/auth/login");
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [router]);
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    logout().finally(() => {
+      if (!active) return;
+      timer = setTimeout(() => router.replace("/auth/login"), 1200);
+    });
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [logout, router]);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-zinc-50 px-4">
-      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-zinc-100 p-8 text-center space-y-6 transform animate-in fade-in zoom-in-95 duration-500">
-        
+      <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-zinc-100 p-8 text-center space-y-6">
         <div className="flex justify-center">
           <div className="w-16 h-16 bg-zinc-900 rounded-2xl flex items-center justify-center text-emerald-400 relative shadow-lg shadow-zinc-200">
             <Bot size={32} />
@@ -34,7 +40,7 @@ export default function LogoutPage() {
           <p className="mt-2 text-sm text-zinc-500 font-medium">Your session has been securely ended.</p>
         </div>
 
-        <div className="bg-zinc-50 rounded-xl p-4 flex items-center gap-3 text-sm font-medium text-zinc-600 border border-zinc-100 mb-6">
+        <div className="bg-zinc-50 rounded-xl p-4 flex items-center gap-3 text-sm font-medium text-zinc-600 border border-zinc-100">
           <LogOut className="text-zinc-400" size={18} />
           Redirecting you to the login page...
         </div>

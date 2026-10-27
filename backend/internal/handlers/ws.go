@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -14,6 +15,8 @@ import (
 	"github.com/gorilla/websocket"
 
 	"erpagent-backend/internal/audit"
+	"erpagent-backend/internal/auth"
+	"erpagent-backend/internal/chathistory"
 	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/domain"
@@ -22,11 +25,29 @@ import (
 	"erpagent-backend/middleware"
 )
 
-var wsUpgrader = websocket.Upgrader{
-	ReadBufferSize:  1024,
-	WriteBufferSize: 1024,
-	// Same-origin gateway; tenant auth travels via query params (locked Q6/Q7).
-	CheckOrigin: func(r *http.Request) bool { return true },
+func websocketUpgrader(cfg *config.Config) websocket.Upgrader {
+	return websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 1024,
+		CheckOrigin: func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			parsed, err := url.Parse(origin)
+			if err != nil {
+				return false
+			}
+			if parsed.Host == r.Host {
+				return true
+			}
+			// Local development may run the frontend and gateway on different ports.
+			if cfg.Environment != "production" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1") {
+				return true
+			}
+			return false
+		},
+	}
 }
 
 // Conversational approval matchers (deterministic Go-side mirror of the AI
@@ -75,19 +96,12 @@ func (w *wsWriter) send(msg realtime.ServerMessage) {
 // chat channel (staged status -> text -> ui -> done) + tenant-activity channel.
 // Tenant/conversation travel via query params (browsers can't set WS headers).
 // auditStore and connStore may be nil (writes/resolution fall back safely).
-func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store) http.HandlerFunc {
+func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store, authStore auth.Store, historyStore chathistory.Store) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		tenantID := r.URL.Query().Get("tenant_id")
-		if tenantID == "" {
-			tenantID = r.Header.Get("X-Tenant-ID")
-		}
-		if tenantID == "" {
-			if v, _ := r.Context().Value(middleware.TenantIDKey).(string); v != "" {
-				tenantID = v
-			}
-		}
-		if tenantID == "" {
-			tenantID = "default_tenant"
+		tenantID, userID, ok := middleware.ResolveTenant(r, authStore, cfg.InternalAPIToken, cfg.Environment)
+		if !ok {
+			http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
+			return
 		}
 		conversationID := r.URL.Query().Get("conversation_id")
 		if conversationID == "" {
@@ -95,7 +109,8 @@ func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store
 		}
 		erpType := r.URL.Query().Get("erp_type")
 
-		conn, err := wsUpgrader.Upgrade(w, r, nil)
+		upgrader := websocketUpgrader(cfg)
+		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			log.Printf("ws upgrade failed: %v", err)
 			return
@@ -130,7 +145,7 @@ func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store
 		go func() {
 			defer close(done)
 			for job := range jobs {
-				processChatTurn(r.Context(), cfg, store, auditStore, connStore, writer, tenantID, job.conversationID, erpType, job.text)
+				processChatTurn(r.Context(), cfg, store, auditStore, connStore, historyStore, writer, tenantID, userID, job.conversationID, erpType, job.text)
 			}
 		}()
 		defer func() {
@@ -159,7 +174,7 @@ func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store
 	}
 }
 
-func processChatTurn(ctx context.Context, cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store, writer *wsWriter, tenantID, conversationID, erpType, text string) {
+func processChatTurn(ctx context.Context, cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store, historyStore chathistory.Store, writer *wsWriter, tenantID, userID, conversationID, erpType, text string) {
 	send := func(msgType, txt string, blocks []realtime.UIBlock) {
 		writer.send(realtime.ServerMessage{
 			Channel:        realtime.ChannelChat,
@@ -184,10 +199,13 @@ func processChatTurn(ctx context.Context, cfg *config.Config, store realtime.Sto
 		return
 	}
 	_ = store.AppendHistory(ctx, tenantID, conversationID, "user", text)
+	if historyStore != nil && userID != "" && userID != "dev" && userID != "service" {
+		_ = historyStore.AppendMessage(ctx, tenantID, userID, conversationID, "user", text)
+	}
 
 	// Conversational approval first: deterministic, no LLM ambiguity on money.
 	if isAffirm(text) || isReject(text) {
-		if handled := processPendingDecision(ctx, cfg, store, auditStore, connStore, writer, send, tenantID, conversationID, erpType, isAffirm(text)); handled {
+		if handled := processPendingDecision(ctx, cfg, store, auditStore, connStore, historyStore, writer, send, tenantID, userID, conversationID, erpType, isAffirm(text)); handled {
 			return
 		}
 		// No pending action: fall through and treat as a normal prompt.
@@ -203,7 +221,7 @@ func processChatTurn(ctx context.Context, cfg *config.Config, store realtime.Sto
 	}
 
 	resp, parsed := chatResponseFromProcess(proc, text)
-	finishChatTurn(ctx, store, auditStore, send, tenantID, conversationID, text, parsed, resp)
+	finishChatTurn(ctx, store, auditStore, historyStore, send, tenantID, userID, conversationID, text, parsed, resp)
 }
 
 // chatResponseFromProcess converts the agent's typed turn into the gateway's
@@ -289,7 +307,7 @@ func chatResponseFromProcess(proc *ProcessResponse, prompt string) (*ChatRespons
 
 // processPendingDecision runs the held dry-run (affirm=true, dry_run=false) or
 // discards it (affirm=false). Returns false when nothing is pending.
-func processPendingDecision(ctx context.Context, cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store, writer *wsWriter, send func(string, string, []realtime.UIBlock), tenantID, conversationID, erpType string, affirm bool) bool {
+func processPendingDecision(ctx context.Context, cfg *config.Config, store realtime.Store, auditStore audit.Store, connStore connectors.Store, historyStore chathistory.Store, writer *wsWriter, send func(string, string, []realtime.UIBlock), tenantID, userID, conversationID, erpType string, affirm bool) bool {
 	pending, err := store.TakePending(ctx, tenantID, conversationID)
 	if err != nil || pending == nil {
 		return false
@@ -297,6 +315,9 @@ func processPendingDecision(ctx context.Context, cfg *config.Config, store realt
 
 	if !affirm {
 		_ = store.AppendHistory(ctx, tenantID, conversationID, "assistant", "Discarded the pending action.")
+		if historyStore != nil && userID != "" && userID != "dev" && userID != "service" {
+			_ = historyStore.AppendMessage(ctx, tenantID, userID, conversationID, "assistant", "Discarded the pending action.")
+		}
 		appendAudit(ctx, auditStore, tenantID, conversationID, pending.Prompt, heldIntentType(pending), "", "rejected")
 		send(realtime.EventText, "Discarded. Nothing was executed — tell me what you'd like instead.", nil)
 		send(realtime.EventDone, "", nil)
@@ -335,14 +356,17 @@ func processPendingDecision(ctx context.Context, cfg *config.Config, store realt
 		return true
 	}
 
-	finishChatTurn(ctx, store, auditStore, send, tenantID, conversationID, pending.Prompt, &parsed, resp)
+	finishChatTurn(ctx, store, auditStore, historyStore, send, tenantID, userID, conversationID, pending.Prompt, &parsed, resp)
 	return true
 }
 
 // finishChatTurn streams text + ui blocks, holds pending approvals in Redis,
 // writes the immutable audit row, and publishes lean activity events.
-func finishChatTurn(ctx context.Context, store realtime.Store, auditStore audit.Store, send func(string, string, []realtime.UIBlock), tenantID, conversationID, prompt string, parsed *ParsedIntentResponse, resp *ChatResponse) {
+func finishChatTurn(ctx context.Context, store realtime.Store, auditStore audit.Store, historyStore chathistory.Store, send func(string, string, []realtime.UIBlock), tenantID, userID, conversationID, prompt string, parsed *ParsedIntentResponse, resp *ChatResponse) {
 	_ = store.AppendHistory(ctx, tenantID, conversationID, "assistant", resp.Message)
+	if historyStore != nil && userID != "" && userID != "dev" && userID != "service" {
+		_ = historyStore.AppendMessage(ctx, tenantID, userID, conversationID, "assistant", resp.Message)
+	}
 
 	approval := "none"
 	target := sniffRecordID(resp.Data)

@@ -132,7 +132,7 @@ export function AuditView() {
 }
 
 // ---------------------------------------------------------------------------
-// SettingsView: tenant ERP connectors (list / add / test / delete).
+// SettingsView: runtime AI model + tenant ERP connectors.
 // ---------------------------------------------------------------------------
 type Connector = {
   tenant_id: string;
@@ -144,6 +144,37 @@ type Connector = {
   has_secret?: boolean;
 };
 
+type LLMSettings = {
+  provider: string;
+  base_url: string;
+  model: string;
+  max_tokens: number;
+  has_api_key: boolean;
+  updated_at?: string;
+};
+
+const LLM_PROVIDERS = [
+  { value: "groq", label: "Groq" },
+  { value: "openai", label: "OpenAI" },
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "custom", label: "Custom OpenAI-compatible" },
+];
+
+const LLM_BASE_URLS: Record<string, string> = {
+  groq: "https://api.groq.com/openai/v1",
+  openai: "https://api.openai.com/v1",
+  openrouter: "https://openrouter.ai/api/v1",
+  custom: "",
+};
+
+const DEFAULT_LLM_FORM = {
+  provider: "groq",
+  base_url: LLM_BASE_URLS.groq,
+  model: "llama3-70b-8192",
+  max_tokens: 400,
+  api_key: "",
+};
+
 export function SettingsView() {
   const [items, setItems] = useState<Connector[]>([]);
   const [loading, setLoading] = useState(true);
@@ -151,6 +182,13 @@ export function SettingsView() {
   const [form, setForm] = useState({ name: "default", erp_type: "MOCK", base_url: "", db_name: "", username: "", password: "" });
   const [testMsg, setTestMsg] = useState("");
   const [testing, setTesting] = useState(false);
+
+  const [llm, setLlm] = useState<LLMSettings | null>(null);
+  const [llmForm, setLlmForm] = useState(DEFAULT_LLM_FORM);
+  const [llmLoading, setLlmLoading] = useState(true);
+  const [llmSaving, setLlmSaving] = useState(false);
+  const [llmTesting, setLlmTesting] = useState(false);
+  const [llmMsg, setLlmMsg] = useState<{ tone: "ok" | "error" | "warn"; text: string } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -165,9 +203,30 @@ export function SettingsView() {
     }
   }, []);
 
+  const loadLLM = useCallback(async () => {
+    setLlmLoading(true);
+    try {
+      const res = await apiGet<{ data: LLMSettings }>("/settings/llm");
+      const data = res.data;
+      setLlm(data);
+      setLlmForm({
+        provider: data.provider || "groq",
+        base_url: data.base_url || LLM_BASE_URLS[data.provider] || "",
+        model: data.model || "",
+        max_tokens: data.max_tokens || 400,
+        api_key: "",
+      });
+    } catch (e: any) {
+      setLlmMsg({ tone: "error", text: e.message || "Failed to load AI model settings" });
+    } finally {
+      setLlmLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     load();
-  }, [load]);
+    loadLLM();
+  }, [load, loadLLM]);
 
   const payload = () => ({
     name: form.name || "default",
@@ -177,6 +236,65 @@ export function SettingsView() {
     username: form.username || undefined,
     password: form.password || undefined,
   });
+
+  const llmPayload = () => ({
+    provider: llmForm.provider,
+    base_url: llmForm.base_url,
+    model: llmForm.model,
+    max_tokens: Number(llmForm.max_tokens) || 400,
+    api_key: llmForm.api_key,
+  });
+
+  const onProviderChange = (provider: string) => {
+    setLlmForm((prev) => {
+      const knownDefaults = Object.values(LLM_BASE_URLS).filter(Boolean);
+      const shouldReplace = !prev.base_url.trim() || knownDefaults.includes(prev.base_url.trim());
+      return {
+        ...prev,
+        provider,
+        base_url: shouldReplace ? LLM_BASE_URLS[provider] || "" : prev.base_url,
+      };
+    });
+  };
+
+  const onSaveLLM = async () => {
+    setLlmSaving(true);
+    setLlmMsg(null);
+    try {
+      const res = await apiPost<{ data: LLMSettings; applied: boolean; warning?: string }>("/settings/llm", llmPayload());
+      setLlm(res.data);
+      setLlmForm((prev) => ({
+        ...prev,
+        provider: res.data.provider,
+        base_url: res.data.base_url,
+        model: res.data.model,
+        max_tokens: res.data.max_tokens,
+        api_key: "",
+      }));
+      if (res.applied === false) {
+        setLlmMsg({ tone: "warn", text: res.warning || "Saved, but the AI engine has not applied it yet." });
+      } else {
+        setLlmMsg({ tone: "ok", text: "AI model settings saved and applied." });
+      }
+    } catch (e: any) {
+      setLlmMsg({ tone: "error", text: e.message || "Save failed" });
+    } finally {
+      setLlmSaving(false);
+    }
+  };
+
+  const onTestLLM = async () => {
+    setLlmTesting(true);
+    setLlmMsg(null);
+    try {
+      const res = await apiPost<{ ok: boolean; message: string }>("/settings/llm/test", llmPayload());
+      setLlmMsg({ tone: res.ok ? "ok" : "error", text: res.message });
+    } catch (e: any) {
+      setLlmMsg({ tone: "error", text: e.message || "Test failed" });
+    } finally {
+      setLlmTesting(false);
+    }
+  };
 
   const onTest = async () => {
     setTesting(true);
@@ -224,10 +342,92 @@ export function SettingsView() {
   };
 
   const input = "w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-slate-200";
+  const messageTone = (tone: "ok" | "error" | "warn") =>
+    tone === "ok" ? "text-emerald-700" : tone === "warn" ? "text-amber-700" : "text-rose-600";
 
   return (
     <div className="flex-1 overflow-y-auto p-8">
-      <h2 className="mb-4 text-lg font-semibold tracking-tight">Connectors</h2>
+      <div className="mb-6 max-w-2xl rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-1 flex items-center justify-between">
+          <h2 className="text-lg font-semibold tracking-tight">AI model</h2>
+          <span
+            className={`rounded-full px-2.5 py-1 text-[11px] font-medium ${
+              llm?.has_api_key ? "bg-emerald-50 text-emerald-600" : "bg-amber-50 text-amber-700"
+            }`}
+          >
+            {llm?.has_api_key ? "API key configured" : "No API key"}
+          </span>
+        </div>
+        <p className="mb-4 text-xs text-slate-500">
+          The agent uses this provider for every conversation. The key is encrypted at rest and applied without restarting the AI engine.
+        </p>
+
+        {llmLoading ? (
+          <p className="text-sm text-slate-400">Loading…</p>
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-3">
+              <select className={input} value={llmForm.provider} onChange={(e) => onProviderChange(e.target.value)}>
+                {LLM_PROVIDERS.map((p) => (
+                  <option key={p.value} value={p.value}>{p.label}</option>
+                ))}
+              </select>
+              <input
+                className={input}
+                placeholder="Model, e.g. llama3-70b-8192"
+                value={llmForm.model}
+                onChange={(e) => setLlmForm({ ...llmForm, model: e.target.value })}
+              />
+              <input
+                className={`${input} col-span-2`}
+                placeholder="Base URL, e.g. https://api.groq.com/openai/v1"
+                value={llmForm.base_url}
+                onChange={(e) => setLlmForm({ ...llmForm, base_url: e.target.value })}
+              />
+              <input
+                className={input}
+                type="number"
+                min={1}
+                max={8192}
+                placeholder="Max output tokens"
+                value={llmForm.max_tokens}
+                onChange={(e) => setLlmForm({ ...llmForm, max_tokens: Number(e.target.value) })}
+              />
+              <input
+                className={input}
+                type="password"
+                placeholder={llm?.has_api_key ? "Leave blank to keep the current key" : "API key"}
+                value={llmForm.api_key}
+                onChange={(e) => setLlmForm({ ...llmForm, api_key: e.target.value })}
+              />
+            </div>
+            <p className="mt-2 text-[11px] text-slate-400">
+              {llm?.has_api_key
+                ? `Current model: ${llm.model} · Key stored encrypted`
+                : "Paste the provider API key once; it is stored encrypted in Postgres."}
+            </p>
+            {llmMsg && <p className={`mt-3 text-xs ${messageTone(llmMsg.tone)}`}>{llmMsg.text}</p>}
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={onTestLLM}
+                disabled={llmTesting}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                {llmTesting ? "Testing…" : "Test provider"}
+              </button>
+              <button
+                onClick={onSaveLLM}
+                disabled={llmSaving}
+                className="rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700 disabled:opacity-50"
+              >
+                {llmSaving ? "Saving…" : "Save AI model"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      <h2 className="mb-4 text-lg font-semibold tracking-tight">ERP connector</h2>
       {error && <p className="mb-3 text-sm text-rose-600">{error}</p>}
       {loading ? (
         <p className="text-sm text-slate-400">Loading…</p>
@@ -276,18 +476,21 @@ export function SettingsView() {
           </select>
           {["POSTGRES", "MYSQL"].includes(form.erp_type) ? (
             <>
-              <input className={`${input} col-span-2`} placeholder="Database URL (e.g. postgres://user:pass@host/db)" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-              <input className={`${input} col-span-2`} type="password" placeholder="Additional Credentials (if not in URL)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
+              <input className={`${input} col-span-2`} placeholder="Database URL (e.g. postgres://user:pass@10.0.0.25:5432/db)" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+              <input className={`${input} col-span-2`} type="password" placeholder="Additional credentials (if not in URL)" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
             </>
           ) : (
             <>
-              <input className={input} placeholder="Base URL / API endpoint" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
-              <input className={input} placeholder="Database / Tenant ID" value={form.db_name} onChange={(e) => setForm({ ...form, db_name: e.target.value })} />
-              <input className={input} placeholder="Username / Client ID" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
+              <input className={input} placeholder="http://192.168.1.50:8069" value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+              <input className={input} placeholder="Database / tenant ID" value={form.db_name} onChange={(e) => setForm({ ...form, db_name: e.target.value })} />
+              <input className={input} placeholder="Username / client ID" value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} />
               <input className={input} type="password" placeholder="Password / API key" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} />
             </>
           )}
         </div>
+        <p className="mt-2 text-[11px] text-slate-400">
+          Use the Odoo server&apos;s IP or hostname reachable from this deployment. Do not use host.docker.internal.
+        </p>
         {testMsg && <p className="mt-3 text-xs text-slate-600">{testMsg}</p>}
         <div className="mt-3 flex gap-2">
           <button
@@ -301,7 +504,7 @@ export function SettingsView() {
             Save connector
           </button>
         </div>
-        <p className="mt-3 text-[11px] text-slate-400">Secrets persist in Postgres in v1 — move to Vault before multi-customer production.</p>
+        <p className="mt-3 text-[11px] text-slate-400">Connector secrets persist in Postgres in v1 — move to Vault before multi-customer production.</p>
       </div>
     </div>
   );

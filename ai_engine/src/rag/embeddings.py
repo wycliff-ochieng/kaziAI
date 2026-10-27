@@ -1,5 +1,5 @@
 from langchain_openai import OpenAIEmbeddings
-from src.core.config import settings
+from src.core.runtime_llm import snapshot
 
 def get_embeddings():
     """Returns the unified embeddings model."""
@@ -8,5 +8,5 @@ def get_embeddings():
     # we might use HuggingFaceEmbeddings instead. For now, OpenAI is used.
     return OpenAIEmbeddings(
         model="text-embedding-3-small", 
-        api_key=settings.LLM_API_KEY or "sk-dummy"
+        api_key=snapshot().api_key or "sk-dummy"
     )

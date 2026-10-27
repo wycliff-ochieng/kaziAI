@@ -35,7 +35,7 @@ func TestAcceptance_Q10Demo(t *testing.T) {
 	defer unsub()
 
 	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", ChatSocket(cfg, chatStore, auditStore, connStore))
+	mux.HandleFunc("/ws", ChatSocket(cfg, chatStore, auditStore, connStore, nil, nil))
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 

@@ -3,32 +3,47 @@ package main
 import (
 	"log"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/gorilla/mux"
 
 	"erpagent-backend/internal/audit"
+	"erpagent-backend/internal/auth"
+	"erpagent-backend/internal/chathistory"
 	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/connectors"
 	"erpagent-backend/internal/database"
 	"erpagent-backend/internal/handlers"
+	"erpagent-backend/internal/llmsettings"
 	"erpagent-backend/internal/realtime"
 	"erpagent-backend/middleware"
 )
 
-func corsMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID")
+func corsMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if origin := r.Header.Get("Origin"); origin != "" {
+				parsed, err := url.Parse(origin)
+				allowed := err == nil && (parsed.Host == r.Host ||
+					(cfg.Environment != "production" && (parsed.Hostname() == "localhost" || parsed.Hostname() == "127.0.0.1")))
+				if allowed {
+					w.Header().Set("Access-Control-Allow-Origin", origin)
+					w.Header().Set("Vary", "Origin")
+					w.Header().Set("Access-Control-Allow-Credentials", "true")
+				}
+			}
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Tenant-ID, X-Internal-Token")
 
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+			if r.Method == http.MethodOptions {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 
-		next.ServeHTTP(w, r)
-	})
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 // @title ERPAgent Universal Gateway API
@@ -42,7 +57,7 @@ func main() {
 	r := mux.NewRouter()
 
 	// Global Middlewares
-	r.Use(corsMiddleware)
+	r.Use(corsMiddleware(cfg))
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recover)
 
@@ -88,11 +103,60 @@ func main() {
 		}
 	}
 	handlers.GlobalConnStore = connStore
-	api.HandleFunc("/ws", handlers.ChatSocket(cfg, chatStore, auditStore, connStore))
 
-	// Protected Subrouter with TenantAuth Middleware
+	// Accounts and sessions. Postgres is required for multi-user production;
+	// memory keeps local dev usable without PG.
+	var authStore auth.Store = auth.NewMemoryStore()
+	if pg != nil {
+		if as, err := auth.NewPostgresStore(pg); err != nil {
+			log.Printf("Auth migrate failed (%v); using in-memory accounts", err)
+		} else {
+			authStore = as
+		}
+	}
+
+	// Durable chat history (browsable conversations).
+	var historyStore chathistory.Store = chathistory.NewMemoryStore()
+	if pg != nil {
+		if hs, err := chathistory.NewPostgresStore(pg); err != nil {
+			log.Printf("Chat history migrate failed (%v); using in-memory history", err)
+		} else {
+			historyStore = hs
+		}
+	}
+
+	// Runtime LLM settings (UI-managed, encrypted at rest).
+	var llmStore llmsettings.Store = llmsettings.NewMemoryStore()
+	if pg != nil {
+		if ls, err := llmsettings.NewPostgresStore(pg, cfg.SettingsEncryptionKey); err != nil {
+			log.Printf("LLM settings migrate failed (%v); using in-memory settings", err)
+		} else {
+			llmStore = ls
+		}
+	}
+
+	api.HandleFunc("/ws", handlers.ChatSocket(cfg, chatStore, auditStore, connStore, authStore, historyStore))
+	// Internal config pull for the AI engine; protected by INTERNAL_API_TOKEN.
+	api.HandleFunc("/internal/llm-config", handlers.InternalLLMConfig(llmStore, cfg)).Methods(http.MethodGet)
+
+	// Public account endpoints.
+	api.HandleFunc("/auth/register", handlers.Register(authStore, cfg)).Methods(http.MethodPost)
+	api.HandleFunc("/auth/login", handlers.Login(authStore, cfg)).Methods(http.MethodPost)
+	api.HandleFunc("/auth/logout", handlers.Logout(authStore, cfg)).Methods(http.MethodPost)
+
+	// Protected Subrouter with session auth.
 	protected := api.PathPrefix("/").Subrouter()
-	protected.Use(middleware.TenantAuth)
+	protected.Use(middleware.Auth(authStore, cfg.InternalAPIToken, cfg.Environment))
+
+	// Account profile.
+	protected.HandleFunc("/auth/me", handlers.Me(authStore)).Methods(http.MethodGet)
+	protected.HandleFunc("/auth/profile", handlers.UpdateProfile(authStore)).Methods(http.MethodPatch)
+	protected.HandleFunc("/auth/password", handlers.ChangePassword(authStore)).Methods(http.MethodPost)
+
+	// Browsable chat history.
+	protected.HandleFunc("/chats", handlers.ListChats(historyStore)).Methods(http.MethodGet)
+	protected.HandleFunc("/chats/{id}", handlers.GetChat(historyStore)).Methods(http.MethodGet)
+	protected.HandleFunc("/chats/{id}", handlers.DeleteChat(historyStore)).Methods(http.MethodDelete)
 
 	// AI Intent & Natural Language Chat Endpoints
 	protected.HandleFunc("/chat", handlers.HandleChat(cfg)).Methods(http.MethodPost)
@@ -142,6 +206,11 @@ func main() {
 	protected.HandleFunc("/connectors/{name}", handlers.DeleteConnector(connStore, cfg)).Methods(http.MethodDelete)
 	protected.HandleFunc("/connectors/{name}/test", handlers.TestConnectorStored(connStore, cfg)).Methods(http.MethodPost)
 
+	// Runtime AI model settings, editable from the workspace UI.
+	protected.HandleFunc("/settings/llm", handlers.GetLLMSettings(llmStore, authStore, cfg)).Methods(http.MethodGet)
+	protected.HandleFunc("/settings/llm", handlers.SaveLLMSettings(llmStore, authStore, cfg)).Methods(http.MethodPost)
+	protected.HandleFunc("/settings/llm/test", handlers.TestLLMSettings(llmStore, authStore, cfg)).Methods(http.MethodPost)
+
 	srv := &http.Server{
 		Handler:      r,
 		Addr:         ":" + cfg.Port,
@@ -149,6 +218,9 @@ func main() {
 		ReadTimeout:  15 * time.Second,
 	}
 
+	if cfg.Environment == "production" && cfg.AdminEmail == "" {
+		log.Printf("WARNING: ADMIN_EMAIL is not set; deployment-wide AI model settings are disabled")
+	}
 	log.Printf("Starting ERPAgent Gateway (Gorilla Mux) on port %s", cfg.Port)
 	log.Fatal(srv.ListenAndServe())
 }

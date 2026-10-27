@@ -51,6 +51,10 @@ class BackendClient:
 
     def _headers(self) -> Dict[str, str]:
         headers = {"Content-Type": "application/json"}
+        # The gateway trusts this shared secret for service-to-service calls and
+        # still scopes every request to the tenant forwarded below.
+        if settings.INTERNAL_API_TOKEN:
+            headers["X-Internal-Token"] = settings.INTERNAL_API_TOKEN
         tenant_id = _tool_context.get().get("tenant_id", "")
         if tenant_id:
             headers["X-Tenant-ID"] = tenant_id

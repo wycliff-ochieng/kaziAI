@@ -8,17 +8,24 @@ services:
       - "3001:3000"
     environment:
       - PORT=3000
-      - DATABASE_URL=postgres://postgres:postgres@postgres:5432/erpagent?sslmode=disable
-      - REDIS_URL=redis:6379
+      - ENVIRONMENT=development
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:postgres@postgres:5432/erpagent?sslmode=disable}
+      - REDIS_URL=${REDIS_URL:-redis:6379}
       - AI_ENGINE_URL=http://ai_engine:8000
       - AI_ENGINE_GRPC=ai_engine:50051
-      - DEFAULT_ERP_TYPE=ODOO
-      - ODOO_URL=http://host.docker.internal:8569
-      - ODOO_DB=vivace-prod
-      - ODOO_USER=management@vivace.co.ke
-      - ODOO_PASSWORD=Mobipine123!
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - DEFAULT_ERP_TYPE=${DEFAULT_ERP_TYPE:-ODOO}
+      - ODOO_URL=${ODOO_URL:-}
+      - ODOO_DB=${ODOO_DB:-}
+      - ODOO_USER=${ODOO_USER:-}
+      - ODOO_PASSWORD=${ODOO_PASSWORD:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      - LLM_MODEL=${LLM_MODEL:-llama3-70b-8192}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-400}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-dev-internal-token}
+      - SETTINGS_ENCRYPTION_KEY=${SETTINGS_ENCRYPTION_KEY:-dev-only-encryption-key}
     depends_on:
       - postgres
       - redis
@@ -35,15 +42,19 @@ services:
       - "50051:50051" # gRPC
     environment:
       - ENVIRONMENT=development
+      - BACKEND_API_URL=http://go_backend:3000
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:-dev-internal-token}
+    env_file:
+      - ./ai_engine/.env
     networks:
       - erp_net
 
   postgres:
     image: ankane/pgvector:v0.5.1
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: erpagent
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: ${POSTGRES_DB:-erpagent}
     ports:
       - "5432:5432"
     volumes:

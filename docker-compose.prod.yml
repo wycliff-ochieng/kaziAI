@@ -1,0 +1,140 @@
+name: erpagent
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - go_backend
+    networks:
+      - erp_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - NEXT_TELEMETRY_DISABLED=1
+      # Same-origin requests: Caddy routes /api/* to the gateway.
+      - NEXT_PUBLIC_GATEWAY_HTTP=
+      - NEXT_PUBLIC_GATEWAY_WS=
+    expose:
+      - "3000"
+    depends_on:
+      - go_backend
+    networks:
+      - erp_net
+
+  go_backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - PORT=3000
+      - ENVIRONMENT=production
+      - ADMIN_EMAIL=${ADMIN_EMAIL:-}
+      - DATABASE_URL=${DATABASE_URL:-postgres://postgres:change-me@postgres:5432/erpagent?sslmode=disable}
+      - REDIS_URL=${REDIS_URL:-redis:6379}
+      - AI_ENGINE_URL=http://ai_engine:8000
+      - AI_ENGINE_GRPC=ai_engine:50051
+      - DEFAULT_ERP_TYPE=${DEFAULT_ERP_TYPE:-ODOO}
+      - ODOO_URL=${ODOO_URL:-}
+      - ODOO_DB=${ODOO_DB:-}
+      - ODOO_USER=${ODOO_USER:-}
+      - ODOO_PASSWORD=${ODOO_PASSWORD:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      - LLM_MODEL=${LLM_MODEL:-llama3-70b-8192}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-400}
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN}
+      - SETTINGS_ENCRYPTION_KEY=${SETTINGS_ENCRYPTION_KEY:?set SETTINGS_ENCRYPTION_KEY}
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - erp_net
+
+  ai_engine:
+    build:
+      context: ./ai_engine
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      - ENVIRONMENT=production
+      - BACKEND_API_URL=http://go_backend:3000
+      - INTERNAL_API_TOKEN=${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN}
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.groq.com/openai/v1}
+      - LLM_MODEL=${LLM_MODEL:-llama3-70b-8192}
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-400}
+    expose:
+      - "8000"
+      - "50051"
+    depends_on:
+      - go_backend
+    networks:
+      - erp_net
+
+  postgres:
+    image: ankane/pgvector:v0.5.1
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-erpagent}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - erp_net
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redisdata:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks:
+      - erp_net
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+
+networks:
+  erp_net:
+    driver: bridge

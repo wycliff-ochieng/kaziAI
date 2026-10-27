@@ -1,0 +1,13 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	# The browser talks to the gateway on the same origin. Caddy terminates TLS
+	# and forwards both REST and WebSocket traffic.
+	handle /api/* {
+		reverse_proxy go_backend:3000
+	}
+
+	handle {
+		reverse_proxy frontend:3000
+	}
+}

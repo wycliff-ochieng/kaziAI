@@ -8,3 +8,7 @@ venv/
 tmp_bin
 .next/
 *.pyc
+lessons
+reference
+.freebuff
+learning-records

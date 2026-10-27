@@ -28,3 +28,11 @@ func TestLoadConfigHonorsEnvironment(t *testing.T) {
 		t.Errorf("expected custom AI URL, got %s", cfg.AIEngineURL)
 	}
 }
+
+func TestLoadConfigReadsAdminEmail(t *testing.T) {
+	t.Setenv("ADMIN_EMAIL", "admin@example.com")
+	cfg := LoadConfig()
+	if cfg.AdminEmail != "admin@example.com" {
+		t.Errorf("expected admin email, got %q", cfg.AdminEmail)
+	}
+}

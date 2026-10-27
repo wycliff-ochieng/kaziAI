@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Activity,
   ArrowUp,
@@ -8,9 +9,13 @@ import {
   Bot,
   ChevronLeft,
   ChevronRight,
+  History,
+  Plus,
   ScrollText,
   Settings,
   ShieldCheck,
+  Trash2,
+  UserRound,
 } from "lucide-react";
 import { MessageSquare } from "lucide-react";
 import {
@@ -23,11 +28,29 @@ import {
 } from "@/lib/ws";
 import { RenderBlock } from "@/components/registry";
 import { AuditView, SettingsView } from "@/components/admin";
+import { ProfileView } from "@/components/profile";
+import { apiDelete, apiGet } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { GenerativeDataTable } from "@/components/ai/generative-data-table";
 
-type View = "chat" | "approvals" | "activity" | "audit" | "settings";
+type View = "chat" | "approvals" | "activity" | "history" | "audit" | "settings" | "profile";
+
+type ChatConversation = {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+};
+
+type StoredMessage = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+};
 
 const SUGGESTIONS = [
   "Show vendors",
@@ -64,23 +87,26 @@ function parseGenerativeReply(text: string) {
   return { payload, display };
 }
 
-function getOrCreateConvId(): string {
-  if (typeof window !== "undefined") {
-    const saved = window.localStorage.getItem("kazi_conv_id");
-    if (saved) return saved;
-    const fresh =
-      typeof crypto !== "undefined" && "randomUUID" in crypto
-        ? crypto.randomUUID()
-        : `conv-${Date.now()}`;
-    window.localStorage.setItem("kazi_conv_id", fresh);
-    return fresh;
-  }
+function freshConvId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
     ? crypto.randomUUID()
     : `conv-${Date.now()}`;
 }
 
+function getOrCreateConvId(): string {
+  if (typeof window !== "undefined") {
+    const saved = window.localStorage.getItem("kazi_conv_id");
+    if (saved) return saved;
+    const fresh = freshConvId();
+    window.localStorage.setItem("kazi_conv_id", fresh);
+    return fresh;
+  }
+  return freshConvId();
+}
+
 export default function WorkspacePage() {
+  const router = useRouter();
+  const { user, loading: authLoading } = useAuth();
   const [view, setView] = useState<View>("chat");
   const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [turns, setTurns] = useState<ChatTurn[]>([]);
@@ -89,9 +115,12 @@ export default function WorkspacePage() {
   const [live, setLive] = useState(false);
   const [status, setStatus] = useState("");
   const [pendingApprovals, setPendingApprovals] = useState(0);
+  const [conversationId, setConversationId] = useState<string>(() => getOrCreateConvId());
+  const [history, setHistory] = useState<ChatConversation[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
 
   const handleRef = useRef<SocketHandle | null>(null);
-  const convRef = useRef<string>(getOrCreateConvId());
+  const convRef = useRef<string>(conversationId);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const latestPendingTurn = useMemo(() => {
@@ -112,10 +141,79 @@ export default function WorkspacePage() {
     });
   }, []);
 
+  const loadHistory = useCallback(async () => {
+    if (!user) return;
+    setHistoryLoading(true);
+    try {
+      const res = await apiGet<{ data: ChatConversation[] }>("/chats");
+      setHistory(res.data || []);
+    } catch {
+      setHistory([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [user]);
+
+  const loadConversation = useCallback(async (id: string) => {
+    try {
+      const res = await apiGet<{ data: StoredMessage[] }>(`/chats/${encodeURIComponent(id)}`);
+      const mapped: ChatTurn[] = (res.data || []).map((m) => ({
+        id: turnSeq++,
+        role: m.role === "user" ? "user" : "assistant",
+        text: m.content,
+        blocks: [],
+        pending: false,
+      }));
+      setTurns(mapped);
+    } catch {
+      setTurns([]);
+    }
+    convRef.current = id;
+    setConversationId(id);
+    if (typeof window !== "undefined") window.localStorage.setItem("kazi_conv_id", id);
+    setStatus("");
+    setView("chat");
+  }, []);
+
+  const newChat = useCallback(() => {
+    const fresh = freshConvId();
+    convRef.current = fresh;
+    setConversationId(fresh);
+    if (typeof window !== "undefined") window.localStorage.setItem("kazi_conv_id", fresh);
+    setTurns([]);
+    setStatus("");
+    setView("chat");
+  }, []);
+
+  const deleteConversation = useCallback(
+    async (id: string) => {
+      try {
+        await apiDelete(`/chats/${encodeURIComponent(id)}`);
+        if (convRef.current === id) newChat();
+        await loadHistory();
+      } catch {
+        // Keep the list unchanged; the next refresh will reconcile.
+      }
+    },
+    [loadHistory, newChat]
+  );
+
   useEffect(() => {
+    if (!authLoading && !user) router.replace("/auth/login");
+  }, [authLoading, user, router]);
+
+  useEffect(() => {
+    if (!user) return;
+    loadHistory();
+    const saved = typeof window !== "undefined" ? window.localStorage.getItem("kazi_conv_id") : null;
+    if (saved) loadConversation(saved);
+  }, [user, loadHistory, loadConversation]);
+
+  useEffect(() => {
+    if (!user) return;
     const handle = openChatSocket({
-      tenantId: "default_tenant",
-      conversationId: convRef.current,
+      tenantId: user.tenant_id,
+      conversationId,
       onOpen: () => setLive(true),
       onClose: () => setLive(false),
       onMessage: (msg: ServerMessage) => {
@@ -144,9 +242,8 @@ export default function WorkspacePage() {
             break;
           case "done":
             setStatus("");
-            setTurns((t) =>
-              t.map((turn) => ({ ...turn, pending: false }))
-            );
+            setTurns((t) => t.map((turn) => ({ ...turn, pending: false })));
+            loadHistory();
             break;
           case "error":
             setStatus("");
@@ -160,13 +257,12 @@ export default function WorkspacePage() {
     });
     handleRef.current = handle;
     return () => handle.close();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [user, conversationId, appendBlocks, loadHistory]);
 
   const send = useCallback(
     (text: string) => {
       const trimmed = text.trim();
-      if (!trimmed) return;
+      if (!trimmed || !user) return;
       setTurns((t) => [
         ...t,
         { id: turnSeq++, role: "user", text: trimmed, blocks: [], pending: true },
@@ -175,7 +271,7 @@ export default function WorkspacePage() {
       setStatus("Sending…");
       handleRef.current?.send(convRef.current, trimmed);
     },
-    []
+    [user]
   );
 
   useEffect(() => {
@@ -194,9 +290,20 @@ export default function WorkspacePage() {
     { id: "chat", label: "Chat", icon: <MessageSquare size={18} /> },
     { id: "approvals", label: "Approvals", icon: <ShieldCheck size={18} />, badge: pendingApprovals },
     { id: "activity", label: "Activity", icon: <Activity size={18} /> },
+    { id: "history", label: "Chat history", icon: <History size={18} /> },
     { id: "audit", label: "Audit Trail", icon: <ScrollText size={18} /> },
     { id: "settings", label: "Settings", icon: <Settings size={18} /> },
+    { id: "profile", label: "Profile", icon: <UserRound size={18} /> },
   ];
+
+  if (authLoading) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-zinc-50 text-sm text-slate-500">
+        Loading workspace…
+      </div>
+    );
+  }
+  if (!user) return null;
 
   return (
     <div className="flex h-screen w-full bg-zinc-50 text-zinc-900 font-sans tracking-tight overflow-hidden">
@@ -250,12 +357,16 @@ export default function WorkspacePage() {
           >
             <Settings size={18} />
           </button>
-          <div title="Workspace (PRO)" className="relative mt-2 flex h-10 w-10 overflow-hidden items-center justify-center rounded-full bg-zinc-800 border border-zinc-700 text-white hover:ring-2 ring-zinc-700 transition-all cursor-pointer">
-            <span className="text-[10px] font-bold tracking-wider">K</span>
-            <span className="absolute -bottom-0.5 w-full text-center rounded-full bg-emerald-500 px-1 text-[7px] font-bold leading-tight text-white border border-zinc-950">
-              PRO
-            </span>
-          </div>
+          <button
+            type="button"
+            title={user.name}
+            onClick={() => setView("profile")}
+            className={`relative mt-2 flex h-10 w-10 overflow-hidden items-center justify-center rounded-full border border-zinc-700 text-white transition-all hover:ring-2 ring-zinc-700 ${
+              view === "profile" ? "bg-emerald-700" : "bg-zinc-800"
+            }`}
+          >
+            <span className="text-[10px] font-bold tracking-wider">{(user.name || user.email).slice(0, 1).toUpperCase()}</span>
+          </button>
         </div>
       </nav>
 
@@ -330,8 +441,15 @@ export default function WorkspacePage() {
                 <Bot size={16} className="mr-2 text-slate-400" /> Workspace Chat
               </span>
               <span className="flex items-center gap-2">
-                <span className="rounded-full bg-slate-100 px-2 py-0.5 font-mono text-[10px] text-slate-500">
-                  default_tenant
+                <button
+                  type="button"
+                  onClick={newChat}
+                  className="flex items-center gap-1 rounded-full border border-slate-200 px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                >
+                  <Plus size={12} /> New chat
+                </button>
+                <span className="hidden rounded-full bg-slate-100 px-2 py-0.5 text-[10px] text-slate-500 sm:inline">
+                  {user.name}
                 </span>
                 {live ? (
                   <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-600">
@@ -506,9 +624,61 @@ export default function WorkspacePage() {
           </div>
         )}
 
+        {view === "history" && (
+          <div className="flex-1 overflow-y-auto p-8">
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-lg font-semibold tracking-tight text-slate-900">Chat history</h2>
+                <p className="text-sm text-slate-500">Every conversation is saved to your account.</p>
+              </div>
+              <button
+                onClick={newChat}
+                className="flex items-center gap-1 rounded-lg bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-700"
+              >
+                <Plus size={12} /> New chat
+              </button>
+            </div>
+            {historyLoading && <p className="text-sm text-slate-400">Loading…</p>}
+            {!historyLoading && history.length === 0 && (
+              <p className="text-sm text-slate-400">No saved conversations yet — start a chat and it will appear here.</p>
+            )}
+            <div className="max-w-2xl space-y-2">
+              {history.map((c) => (
+                <div
+                  key={c.id}
+                  className={`group flex items-center justify-between rounded-xl border p-3 transition-colors ${
+                    c.id === conversationId ? "border-slate-300 bg-slate-50" : "border-slate-200 bg-white hover:bg-slate-50"
+                  }`}
+                >
+                  <button
+                    type="button"
+                    onClick={() => loadConversation(c.id)}
+                    className="min-w-0 flex-1 text-left"
+                  >
+                    <p className="truncate text-sm font-semibold text-slate-800">{c.title || "Untitled conversation"}</p>
+                    <p className="mt-0.5 text-[11px] text-slate-400">
+                      {new Date(c.updated_at).toLocaleString()} · {c.message_count} message{c.message_count === 1 ? "" : "s"}
+                    </p>
+                  </button>
+                  <button
+                    type="button"
+                    title="Delete conversation"
+                    onClick={() => deleteConversation(c.id)}
+                    className="ml-3 flex h-8 w-8 items-center justify-center rounded-lg text-slate-400 opacity-0 transition-opacity hover:bg-rose-50 hover:text-rose-600 group-hover:opacity-100"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {view === "audit" && <AuditView />}
 
         {view === "settings" && <SettingsView />}
+
+        {view === "profile" && <ProfileView />}
       </main>
     </div>
   );

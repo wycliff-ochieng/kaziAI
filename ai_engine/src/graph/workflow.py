@@ -4,10 +4,9 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.graph.message import add_messages
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
-from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import MemorySaver
 
-from src.core.config import settings
+from src.core.llm import get_llm
 from src.core.logger import setup_logger
 from src.graph.state import AgentState
 from src.graph.guardrails import guardrail_node
@@ -101,21 +100,6 @@ def build_ai_engine_graph():
         post_vendor_bill_tool, cancel_purchase_order_tool, get_invoices_tool, count_records_tool
     ]
 
-    api_key = settings.LLM_API_KEY
-    if not api_key:
-        api_key = "sk-dummy"
-
-    llm = ChatOpenAI(
-        model=settings.LLM_MODEL,
-        temperature=0,
-        api_key=api_key,
-        base_url=settings.LLM_BASE_URL,
-        max_tokens=settings.LLM_MAX_TOKENS,
-        timeout=settings.LLM_REQUEST_TIMEOUT,
-        max_retries=1,
-    )
-    llm_with_tools = llm.bind_tools(tools)
-
     async def intent_router_node(state: AgentState):
         """Deterministic gate: conversational turns never reach the LLM/tools."""
         text = _last_human_text(state.get("messages", []))
@@ -134,7 +118,9 @@ def build_ai_engine_graph():
 
     async def agent_node(state: AgentState):
         msgs = [SystemMessage(content=SYSTEM_PROMPT)] + _trim_messages(state["messages"])
-        response = await llm_with_tools.ainvoke(msgs)
+        # Read the runtime config per turn so UI key/model changes take effect
+        # without rebuilding or restarting the graph.
+        response = await get_llm().bind_tools(tools).ainvoke(msgs)
         return {"messages": [response]}
 
     base_tool_node = ToolNode(tools)

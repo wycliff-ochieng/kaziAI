@@ -1,15 +1,9 @@
-from langchain_openai import ChatOpenAI
 from src.schemas.intents import IntentClassification
 from src.graph.state import AgentState
-from src.core.config import settings
+from src.core.llm import get_llm
 
 def get_router_llm():
-    return ChatOpenAI(
-        model=settings.LLM_MODEL, 
-        temperature=0, 
-        api_key=settings.LLM_API_KEY or "sk-dummy",
-        base_url=settings.LLM_BASE_URL
-    )
+    return get_llm()
 
 ROUTER_SYSTEM_PROMPT = """
 You are an Intent Classifier for an Enterprise ERP System.

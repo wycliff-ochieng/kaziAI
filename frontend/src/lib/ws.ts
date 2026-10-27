@@ -33,11 +33,20 @@ export type ChatTurn = {
 };
 
 export function gatewayWsUrl(): string {
+  const configured = process.env.NEXT_PUBLIC_GATEWAY_WS;
+  if (configured) return configured;
   if (typeof window !== "undefined") {
+    // `next dev` serves the UI on :3000 while the gateway listens on :3001.
+    if (
+      (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") &&
+      window.location.port === "3000"
+    ) {
+      return "ws://localhost:3001/api/v1/ws";
+    }
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     return `${protocol}//${window.location.host}/api/v1/ws`;
   }
-  return process.env.NEXT_PUBLIC_GATEWAY_WS || "ws://localhost:3001/api/v1/ws";
+  return "ws://localhost:3001/api/v1/ws";
 }
 
 export type SocketHandle = {
