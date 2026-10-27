@@ -21,6 +21,9 @@ type CustomerFilter struct {
 	Email  string `json:"email,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Offset int    `json:"offset,omitempty"`
+	// Domain carries an allowlisted, AI-compiled Odoo domain (e.g.
+	// [["sale_order_count", ">", 1]]). Validated upstream; never raw user text.
+	Domain []any `json:"domain,omitempty"`
 }
 
 // Product represents the Canonical Product Model.
@@ -41,6 +44,7 @@ type ProductFilter struct {
 	SKU    string `json:"sku,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Offset int    `json:"offset,omitempty"`
+	Domain []any  `json:"domain,omitempty"`
 }
 
 // StockTransferRequest represents payload for moving inventory stock.
@@ -87,6 +91,7 @@ type SaleOrderFilter struct {
 	Search     string `json:"search,omitempty"`
 	Limit      int    `json:"limit,omitempty"`
 	Offset     int    `json:"offset,omitempty"`
+	Domain     []any  `json:"domain,omitempty"`
 }
 
 // CreateSaleOrderLineRequest represents line item payload for order/quotation creation.
@@ -136,7 +141,8 @@ type Invoice struct {
 	MoveType     string    `json:"move_type"` // "out_invoice" (Standard Invoice), "out_refund" (Credit Note)
 	AmountTotal  float64   `json:"amount_total"`
 	AmountDue    float64   `json:"amount_due"`
-	Status       string    `json:"status"` // "draft", "posted", "paid", "cancel"
+	Status       string    `json:"status"`        // "draft", "posted", "paid", "cancel"
+	PaymentState string    `json:"payment_state"` // "not_paid", "partial", "paid", "in_payment"
 	DueDate      time.Time `json:"due_date"`
 	ETIMSStatus  string    `json:"etims_status,omitempty"` // "pending", "fiscalized", "failed"
 	CUSerialNo   string    `json:"cu_serial_no,omitempty"`
@@ -146,12 +152,16 @@ type Invoice struct {
 
 // InvoiceFilter defines search criteria for invoices and credit notes.
 type InvoiceFilter struct {
-	CustomerID string  `json:"customer_id,omitempty"`
-	MoveType   string  `json:"move_type,omitempty"`
-	Status     string  `json:"status,omitempty"`
-	MinAmount  float64 `json:"min_amount,omitempty"`
-	Limit      int     `json:"limit,omitempty"`
-	Offset     int     `json:"offset,omitempty"`
+	CustomerID   string  `json:"customer_id,omitempty"`
+	OrderID      string  `json:"order_id,omitempty"`
+	MoveType     string  `json:"move_type,omitempty"`
+	Status       string  `json:"status,omitempty"`
+	PaymentState string  `json:"payment_state,omitempty"`
+	Overdue      bool    `json:"overdue,omitempty"`
+	MinAmount    float64 `json:"min_amount,omitempty"`
+	Limit        int     `json:"limit,omitempty"`
+	Offset       int     `json:"offset,omitempty"`
+	Domain       []any   `json:"domain,omitempty"`
 }
 
 // CreditNoteRequest payload for issuing credit notes.
@@ -195,14 +205,14 @@ type PrintDocumentResult struct {
 
 // Vendor represents the Canonical Vendor / Supplier Model (portable, not Odoo-specific).
 type Vendor struct {
-	ID          string  `json:"id"`
-	Name        string  `json:"name"`
-	Email       string  `json:"email"`
-	Phone       string  `json:"phone"`
-	Street      string  `json:"street,omitempty"`
-	City        string  `json:"city,omitempty"`
-	Country     string  `json:"country,omitempty"`
-	Balance     float64 `json:"balance"`
+	ID      string  `json:"id"`
+	Name    string  `json:"name"`
+	Email   string  `json:"email"`
+	Phone   string  `json:"phone"`
+	Street  string  `json:"street,omitempty"`
+	City    string  `json:"city,omitempty"`
+	Country string  `json:"country,omitempty"`
+	Balance float64 `json:"balance"`
 }
 
 // VendorFilter defines search criteria for vendors.
@@ -211,6 +221,7 @@ type VendorFilter struct {
 	Email  string `json:"email,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
 	Offset int    `json:"offset,omitempty"`
+	Domain []any  `json:"domain,omitempty"`
 }
 
 // PurchaseOrderLine represents an individual item in an RFQ / Purchase Order.
@@ -247,6 +258,7 @@ type PurchaseOrderFilter struct {
 	Search   string `json:"search,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
 	Offset   int    `json:"offset,omitempty"`
+	Domain   []any  `json:"domain,omitempty"`
 }
 
 // CreatePurchaseOrderLineRequest represents line item payload for RFQ/PO creation.
@@ -278,26 +290,26 @@ type Receipt struct {
 
 // VendorBill represents Canonical Vendor Bill Model.
 type VendorBill struct {
-	ID         string    `json:"id"`
-	BillNo     string    `json:"bill_no"`
-	VendorID   string    `json:"vendor_id"`
-	VendorName string    `json:"vendor_name,omitempty"`
-	OrderID    string    `json:"order_id,omitempty"`
-	MoveType   string    `json:"move_type"` // "in_invoice" (Vendor Bill), "in_refund"
-	AmountTotal float64  `json:"amount_total"`
-	AmountDue   float64  `json:"amount_due"`
-	Status      string   `json:"status"` // "draft", "posted", "paid", "cancel"
+	ID          string    `json:"id"`
+	BillNo      string    `json:"bill_no"`
+	VendorID    string    `json:"vendor_id"`
+	VendorName  string    `json:"vendor_name,omitempty"`
+	OrderID     string    `json:"order_id,omitempty"`
+	MoveType    string    `json:"move_type"` // "in_invoice" (Vendor Bill), "in_refund"
+	AmountTotal float64   `json:"amount_total"`
+	AmountDue   float64   `json:"amount_due"`
+	Status      string    `json:"status"` // "draft", "posted", "paid", "cancel"
 	DueDate     time.Time `json:"due_date"`
 }
 
 // VendorBillFilter defines search criteria for vendor bills.
 type VendorBillFilter struct {
-	VendorID string  `json:"vendor_id,omitempty"`
-	MoveType string  `json:"move_type,omitempty"`
-	Status   string  `json:"status,omitempty"`
+	VendorID  string  `json:"vendor_id,omitempty"`
+	MoveType  string  `json:"move_type,omitempty"`
+	Status    string  `json:"status,omitempty"`
 	MinAmount float64 `json:"min_amount,omitempty"`
-	Limit    int     `json:"limit,omitempty"`
-	Offset   int     `json:"offset,omitempty"`
+	Limit     int     `json:"limit,omitempty"`
+	Offset    int     `json:"offset,omitempty"`
 }
 
 // ValidationPolicy & Approval Details
@@ -311,15 +323,15 @@ const (
 
 // DryRunResult represents preview calculations, impact analysis, and human approval prompts.
 type DryRunResult struct {
-	IsDryRun              bool        `json:"is_dry_run"`
-	Operation             string      `json:"operation"`
-	ImpactSummary         string      `json:"impact_summary"`
-	RiskLevel             RiskLevel   `json:"risk_level"`
-	RequiresConfirmation  bool        `json:"requires_confirmation"`
-	ConfirmationPrompt    string      `json:"confirmation_prompt"` // Explicit user query
-	ConfirmationToken     string      `json:"confirmation_token,omitempty"`
-	SimulatedOrderDetails *SaleOrder  `json:"simulated_order_details,omitempty"`
-	SimulatedInvoice      *Invoice    `json:"simulated_invoice,omitempty"`
+	IsDryRun              bool       `json:"is_dry_run"`
+	Operation             string     `json:"operation"`
+	ImpactSummary         string     `json:"impact_summary"`
+	RiskLevel             RiskLevel  `json:"risk_level"`
+	RequiresConfirmation  bool       `json:"requires_confirmation"`
+	ConfirmationPrompt    string     `json:"confirmation_prompt"` // Explicit user query
+	ConfirmationToken     string     `json:"confirmation_token,omitempty"`
+	SimulatedOrderDetails *SaleOrder `json:"simulated_order_details,omitempty"`
+	SimulatedInvoice      *Invoice   `json:"simulated_invoice,omitempty"`
 }
 
 // ActionResult represents execution response from ERP mutations.
