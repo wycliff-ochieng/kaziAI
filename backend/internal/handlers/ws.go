@@ -13,10 +13,11 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"erpagent-backend/internal/config"
-	"erpagent-backend/internal/factory"
 	"erpagent-backend/internal/audit"
+	"erpagent-backend/internal/config"
 	"erpagent-backend/internal/connectors"
+	"erpagent-backend/internal/domain"
+	"erpagent-backend/internal/factory"
 	"erpagent-backend/internal/realtime"
 	"erpagent-backend/middleware"
 )
@@ -120,6 +121,23 @@ func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store
 			}()
 		}
 
+		// Process turns on a worker so the read loop keeps servicing WebSocket
+		// pings while a slow LLM/tool turn is in flight. Without this, the
+		// client's keepalive times out and the socket drops mid-answer.
+		type chatJob struct{ conversationID, text string }
+		jobs := make(chan chatJob, 32)
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			for job := range jobs {
+				processChatTurn(r.Context(), cfg, store, auditStore, connStore, writer, tenantID, job.conversationID, erpType, job.text)
+			}
+		}()
+		defer func() {
+			close(jobs)
+			<-done
+		}()
+
 		for {
 			var in realtime.ClientMessage
 			if err := conn.ReadJSON(&in); err != nil {
@@ -136,7 +154,7 @@ func ChatSocket(cfg *config.Config, store realtime.Store, auditStore audit.Store
 			if conv == "" {
 				conv = conversationID
 			}
-			processChatTurn(r.Context(), cfg, store, auditStore, connStore, writer, tenantID, conv, erpType, in.Text)
+			jobs <- chatJob{conversationID: conv, text: in.Text}
 		}
 	}
 }
@@ -175,45 +193,98 @@ func processChatTurn(ctx context.Context, cfg *config.Config, store realtime.Sto
 		// No pending action: fall through and treat as a normal prompt.
 	}
 
-	send(realtime.EventStatus, "Understanding request…", nil)
-
-	parsed, err := callAIEngine(ctx, cfg.AIEngineURL, text, tenantID)
+	// One brain: the agent loop executes read tools and returns previews for
+	// writes. Go only executes a plan after an explicit approval below.
+	threadID := tenantID + ":" + conversationID
+	proc, err := callAIProcess(ctx, cfg.AIEngineURL, text, tenantID, threadID, erpType)
 	if err != nil {
-		fail(fmt.Sprintf("AI Engine communication error: %v", err))
+		fail(fmt.Sprintf("AI Engine process communication error: %v", err))
 		return
 	}
 
-	// AI-side affirm/reject classification lands on the same pending flow.
-	if parsed.IntentType == "AFFIRM" || parsed.IntentType == "REJECT" {
-		if handled := processPendingDecision(ctx, cfg, store, auditStore, connStore, writer, send, tenantID, conversationID, erpType, parsed.IntentType == "AFFIRM"); handled {
-			return
-		}
-	}
-
-	connector, err := factory.GetERPConnector(connectors.ResolveTenantConfig(ctx, connStore, tenantID, erpType, factory.TenantConfig{
-		BaseURL:  cfg.OdooURL,
-		DBName:   cfg.OdooDB,
-		Username: cfg.OdooUser,
-		Password: cfg.OdooPassword,
-	}))
-	if err != nil {
-		fail(fmt.Sprintf("Failed to initialize ERP Connector: %v", err))
-		return
-	}
-
-	verb := "Executing…"
-	if parsed.ActionType == "READ" {
-		verb = "Reading…"
-	}
-	send(realtime.EventStatus, verb, nil)
-
-	resp, err := executeIntent(ctx, connector, text, parsed)
-	if err != nil {
-		fail(fmt.Sprintf("ERP action execution failed: %v", err))
-		return
-	}
-
+	resp, parsed := chatResponseFromProcess(proc, text)
 	finishChatTurn(ctx, store, auditStore, send, tenantID, conversationID, text, parsed, resp)
+}
+
+// chatResponseFromProcess converts the agent's typed turn into the gateway's
+// chat response. A write plan is always a preview: execution is a separate,
+// server-side approval step.
+func chatResponseFromProcess(proc *ProcessResponse, prompt string) (*ChatResponse, *ParsedIntentResponse) {
+	parsed := &ParsedIntentResponse{
+		IntentType: proc.IntentType,
+		Confidence: 0.8,
+		ActionType: strings.ToUpper(strings.TrimSpace(proc.ActionType)),
+		Summary:    proc.Response,
+	}
+	if parsed.IntentType == "" {
+		parsed.IntentType = "CONVERSATION"
+	}
+	if parsed.ActionType == "" {
+		parsed.ActionType = "READ"
+	}
+
+	hasPlan := proc.Plan != nil && len(proc.Plan.Steps) > 0
+	if hasPlan && proc.RequiresConfirmation {
+		primary := proc.Plan.Steps[0]
+		parsed.IntentType = primary.IntentType
+		parsed.ActionType = "WRITE"
+		parsed.Parameters = primary.Parameters
+		parsed.Steps = append([]IntentStep(nil), proc.Plan.Steps[1:]...)
+		parsed.Validation = ValidationRequirement{
+			RequiresUserApproval: true,
+			RiskLevel:            "MEDIUM",
+			ApprovalPrompt:       proc.ConfirmationPrompt,
+			ImpactSummary:        proc.Response,
+		}
+		for i := range parsed.Steps {
+			if parsed.Steps[i].Parameters.OrderID == "" {
+				parsed.Steps[i].Parameters.OrderID = primary.Parameters.OrderID
+			}
+		}
+
+		risk := domain.RiskMedium
+		if proc.DryRun != nil && proc.DryRun.RiskLevel != "" {
+			risk = proc.DryRun.RiskLevel
+		}
+		dry := proc.DryRun
+		if dry == nil {
+			dry = &domain.DryRunResult{
+				IsDryRun:             true,
+				Operation:            primary.IntentType,
+				ImpactSummary:        proc.Response,
+				RiskLevel:            risk,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   proc.ConfirmationPrompt,
+			}
+		}
+		// Show the thing being proposed, not incidental lookups the agent did
+		// to resolve names during the same turn.
+		previewData := any(nil)
+		if dry.SimulatedOrderDetails != nil {
+			previewData = dry.SimulatedOrderDetails
+		} else if dry.SimulatedInvoice != nil {
+			previewData = dry.SimulatedInvoice
+		}
+
+		return &ChatResponse{
+			Status:               "dry_run_preview",
+			Prompt:               prompt,
+			ParsedIntent:         parsed,
+			Message:              proc.Response,
+			RequiresConfirmation: true,
+			ConfirmationPrompt:   proc.ConfirmationPrompt,
+			Data:                 previewData,
+			DryRun:               dry,
+		}, parsed
+	}
+
+	return &ChatResponse{
+		Status:       "success",
+		Prompt:       prompt,
+		ParsedIntent: parsed,
+		Message:      proc.Response,
+		Data:         proc.Data,
+	}, parsed
 }
 
 // processPendingDecision runs the held dry-run (affirm=true, dry_run=false) or
@@ -239,6 +310,9 @@ func processPendingDecision(ctx context.Context, cfg *config.Config, store realt
 		return true
 	}
 	parsed.Parameters.DryRun = false
+	for i := range parsed.Steps {
+		parsed.Steps[i].Parameters.DryRun = false
+	}
 
 	connector, err := factory.GetERPConnector(connectors.ResolveTenantConfig(ctx, connStore, tenantID, erpType, factory.TenantConfig{
 		BaseURL:  cfg.OdooURL,
@@ -255,6 +329,7 @@ func processPendingDecision(ctx context.Context, cfg *config.Config, store realt
 	send(realtime.EventStatus, "Confirmed — executing…", nil)
 	resp, err := executeIntent(ctx, connector, pending.Prompt, &parsed)
 	if err != nil {
+		appendAudit(ctx, auditStore, tenantID, conversationID, pending.Prompt, heldIntentType(pending), "", "failed")
 		send(realtime.EventError, fmt.Sprintf("ERP action execution failed: %v", err), nil)
 		send(realtime.EventDone, "", nil)
 		return true
@@ -271,9 +346,11 @@ func finishChatTurn(ctx context.Context, store realtime.Store, auditStore audit.
 
 	approval := "none"
 	target := sniffRecordID(resp.Data)
+	// Dialogue-only turns are not ERP executions and must not be audited as one.
+	conversational := conversationalIntents[parsed.IntentType]
 	if resp.RequiresConfirmation && resp.DryRun != nil {
 		approval = "pending"
-	} else if resp.DryRun == nil && (resp.Status == "success" || resp.Status == "dry_run_preview") {
+	} else if !conversational && resp.DryRun == nil && (resp.Status == "success" || resp.Status == "dry_run_preview") {
 		approval = "executed"
 	}
 	appendAudit(ctx, auditStore, tenantID, conversationID, prompt, parsed.IntentType, target, approval)
@@ -299,7 +376,7 @@ func finishChatTurn(ctx context.Context, store realtime.Store, auditStore audit.
 		send(realtime.EventUI, "", blocks)
 	}
 
-	if resp.DryRun == nil && (resp.Status == "success" || resp.Status == "dry_run_preview") {
+	if !conversational && resp.DryRun == nil && (resp.Status == "success" || resp.Status == "dry_run_preview") {
 		if recID := sniffRecordID(resp.Data); recID != "" || parsed.ActionType == "WRITE" {
 			_ = store.PublishActivity(ctx, realtime.ActivityEvent{
 				Kind:     "executed_" + strings.ToLower(parsed.IntentType),
