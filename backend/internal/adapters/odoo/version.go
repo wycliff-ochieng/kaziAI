@@ -66,7 +66,7 @@ func (o *OdooAdapter) DetectVersion(ctx context.Context) *odooVersion {
 	}
 
 	var info struct {
-		  ServerVersion string `json:"server_version"`
+		ServerVersion string `json:"server_version"`
 	}
 	if err := json.Unmarshal(raw, &info); err != nil {
 		return versionCache
