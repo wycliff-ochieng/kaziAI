@@ -31,6 +31,7 @@ func (o *OdooAdapter) GetVendors(ctx context.Context, filter domain.VendorFilter
 	if filter.Email != "" {
 		domainFilter = append(domainFilter, []interface{}{"email", "=", filter.Email})
 	}
+	domainFilter = appendExtraDomain(domainFilter, filter.Domain)
 
 	limit := 100
 	if filter.Limit > 0 {
@@ -49,14 +50,14 @@ func (o *OdooAdapter) GetVendors(ctx context.Context, filter domain.VendorFilter
 	}
 
 	var items []struct {
-		ID       int           `json:"id"`
-		  Name string `json:"name"`
-		Email    interface{}   `json:"email"`
-		Phone    interface{}   `json:"phone"`
-		Street   interface{}   `json:"street"`
-		City     interface{}   `json:"city"`
-		 Country string `json:"country_id"`
-		TotalDue float64       `json:"total_due"`
+		ID       int         `json:"id"`
+		Name     string      `json:"name"`
+		Email    interface{} `json:"email"`
+		Phone    interface{} `json:"phone"`
+		Street   interface{} `json:"street"`
+		City     interface{} `json:"city"`
+		Country  any         `json:"country_id"`
+		TotalDue float64     `json:"total_due"`
 	}
 	if err := json.Unmarshal(resRaw, &items); err != nil {
 		return nil, fmt.Errorf("failed to parse Odoo vendors response: %w", err)
@@ -67,7 +68,7 @@ func (o *OdooAdapter) GetVendors(ctx context.Context, filter domain.VendorFilter
 		_, country := parseMany2One(item.Country)
 		vendors = append(vendors, domain.Vendor{
 			ID:      fmt.Sprintf("%d", item.ID),
-			Name: fmtStr(item.Name),
+			Name:    fmtStr(item.Name),
 			Email:   fmtStr(item.Email),
 			Phone:   fmtStr(item.Phone),
 			Street:  fmtStr(item.Street),
@@ -100,14 +101,14 @@ func (o *OdooAdapter) GetVendorByID(ctx context.Context, id string) (*domain.Ven
 	}
 
 	var items []struct {
-		ID       int           `json:"id"`
-		  Name string `json:"name"`
-		Email    interface{}   `json:"email"`
-		Phone    interface{}   `json:"phone"`
-		Street   interface{}   `json:"street"`
-		City     interface{}   `json:"city"`
-		 Country string `json:"country_id"`
-		TotalDue float64       `json:"total_due"`
+		ID       int         `json:"id"`
+		Name     string      `json:"name"`
+		Email    interface{} `json:"email"`
+		Phone    interface{} `json:"phone"`
+		Street   interface{} `json:"street"`
+		City     interface{} `json:"city"`
+		Country  any         `json:"country_id"`
+		TotalDue float64     `json:"total_due"`
 	}
 	if err := json.Unmarshal(resRaw, &items); err != nil || len(items) == 0 {
 		return nil, fmt.Errorf("vendor not found with ID %s", id)
@@ -117,7 +118,7 @@ func (o *OdooAdapter) GetVendorByID(ctx context.Context, id string) (*domain.Ven
 	_, country := parseMany2One(item.Country)
 	return &domain.Vendor{
 		ID:      fmt.Sprintf("%d", item.ID),
-		Name: fmtStr(item.Name),
+		Name:    fmtStr(item.Name),
 		Email:   fmtStr(item.Email),
 		Phone:   fmtStr(item.Phone),
 		Street:  fmtStr(item.Street),
@@ -141,6 +142,7 @@ func (o *OdooAdapter) GetPurchaseOrders(ctx context.Context, filter domain.Purch
 	if filter.Search != "" {
 		domainFilter = append(domainFilter, []interface{}{"name", "ilike", filter.Search})
 	}
+	domainFilter = appendExtraDomain(domainFilter, filter.Domain)
 
 	limit := 100
 	if filter.Limit > 0 {
@@ -159,15 +161,15 @@ func (o *OdooAdapter) GetPurchaseOrders(ctx context.Context, filter domain.Purch
 	}
 
 	var items []struct {
-		ID            int           `json:"id"`
-		  Name string `json:"name"`
-		 PartnerID any `json:"partner_id"`
-		  DateOrder string `json:"date_order"`
-		AmountUntaxed float64       `json:"amount_untaxed"`
-		AmountTax     float64       `json:"amount_tax"`
-		AmountTotal   float64       `json:"amount_total"`
-		  State string `json:"state"`
-		OrderLine     []int         `json:"order_line"`
+		ID            int     `json:"id"`
+		Name          string  `json:"name"`
+		PartnerID     any     `json:"partner_id"`
+		DateOrder     string  `json:"date_order"`
+		AmountUntaxed float64 `json:"amount_untaxed"`
+		AmountTax     float64 `json:"amount_tax"`
+		AmountTotal   float64 `json:"amount_total"`
+		State         string  `json:"state"`
+		OrderLine     []int   `json:"order_line"`
 	}
 	if err := json.Unmarshal(resRaw, &items); err != nil {
 		return nil, fmt.Errorf("failed to parse Odoo purchase orders: %w", err)
@@ -179,14 +181,14 @@ func (o *OdooAdapter) GetPurchaseOrders(ctx context.Context, filter domain.Purch
 		dt, _ := time.Parse("2006-01-02 15:04:05", fmtStr(item.DateOrder))
 		orders = append(orders, domain.PurchaseOrder{
 			ID:            fmt.Sprintf("%d", item.ID),
-			OrderNo: fmtStr(item.Name),
+			OrderNo:       fmtStr(item.Name),
 			VendorID:      vid,
 			VendorName:    vname,
 			DateOrder:     dt,
 			AmountUntaxed: item.AmountUntaxed,
 			AmountTax:     item.AmountTax,
 			AmountTotal:   item.AmountTotal,
-			State: fmtStr(item.State),
+			State:         fmtStr(item.State),
 		})
 	}
 
@@ -213,16 +215,16 @@ func (o *OdooAdapter) GetPurchaseOrderByID(ctx context.Context, id string) (*dom
 	}
 
 	var items []struct {
-		ID            int           `json:"id"`
-		  Name string `json:"name"`
-		 PartnerID any `json:"partner_id"`
-		  DateOrder string `json:"date_order"`
-		AmountUntaxed float64       `json:"amount_untaxed"`
-		AmountTax     float64       `json:"amount_tax"`
-		AmountTotal   float64       `json:"amount_total"`
-		  State string `json:"state"`
-		OrderLine     []int         `json:"order_line"`
-		Notes         interface{}   `json:"notes"`
+		ID            int         `json:"id"`
+		Name          string      `json:"name"`
+		PartnerID     any         `json:"partner_id"`
+		DateOrder     string      `json:"date_order"`
+		AmountUntaxed float64     `json:"amount_untaxed"`
+		AmountTax     float64     `json:"amount_tax"`
+		AmountTotal   float64     `json:"amount_total"`
+		State         string      `json:"state"`
+		OrderLine     []int       `json:"order_line"`
+		Notes         interface{} `json:"notes"`
 	}
 	if err := json.Unmarshal(resRaw, &items); err != nil || len(items) == 0 {
 		return nil, fmt.Errorf("purchase order not found with ID %s", id)
@@ -241,12 +243,12 @@ func (o *OdooAdapter) GetPurchaseOrderByID(ctx context.Context, id string) (*dom
 		})
 		if err == nil {
 			var lineItems []struct {
-				ID            int           `json:"id"`
-				 ProductID string `json:"product_id"`
-				  Name string `json:"name"`
-				ProductQty    float64       `json:"product_qty"`
-				PriceUnit     float64       `json:"price_unit"`
-				PriceSubtotal float64       `json:"price_subtotal"`
+				ID            int     `json:"id"`
+				ProductID     string  `json:"product_id"`
+				Name          string  `json:"name"`
+				ProductQty    float64 `json:"product_qty"`
+				PriceUnit     float64 `json:"price_unit"`
+				PriceSubtotal float64 `json:"price_subtotal"`
 			}
 			if json.Unmarshal(linesRaw, &lineItems) == nil {
 				for _, line := range lineItems {
@@ -266,14 +268,14 @@ func (o *OdooAdapter) GetPurchaseOrderByID(ctx context.Context, id string) (*dom
 
 	return &domain.PurchaseOrder{
 		ID:            fmt.Sprintf("%d", item.ID),
-		OrderNo: fmtStr(item.Name),
+		OrderNo:       fmtStr(item.Name),
 		VendorID:      vid,
 		VendorName:    vname,
 		DateOrder:     dt,
 		AmountUntaxed: item.AmountUntaxed,
 		AmountTax:     item.AmountTax,
 		AmountTotal:   item.AmountTotal,
-		State: fmtStr(item.State),
+		State:         fmtStr(item.State),
 		Lines:         lines,
 		Note:          fmtStr(item.Notes),
 	}, nil
@@ -328,13 +330,13 @@ func (o *OdooAdapter) CreateRFQ(ctx context.Context, req domain.CreatePurchaseOr
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: RFQ for %s (Total: $%.2f) is ready to draft.", vendor.Name, totalEstimate),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CREATE_RFQ",
-				ImpactSummary:         fmt.Sprintf("Simulated creation of RFQ for %s with %d lines. Subtotal: $%.2f, Tax: $%.2f, Total: $%.2f", vendor.Name, len(req.Lines), calculatedUntaxed, estimatedTax, totalEstimate),
-				RiskLevel:             domain.RiskLow,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Do you want to draft RFQ for %s (Total: $%.2f)?", vendor.Name, totalEstimate),
-				ConfirmationToken:     fmt.Sprintf("CONFIRM_CREATE_RFQ_%s_%d", vendor.ID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CREATE_RFQ",
+				ImpactSummary:        fmt.Sprintf("Simulated creation of RFQ for %s with %d lines. Subtotal: $%.2f, Tax: $%.2f, Total: $%.2f", vendor.Name, len(req.Lines), calculatedUntaxed, estimatedTax, totalEstimate),
+				RiskLevel:            domain.RiskLow,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Do you want to draft RFQ for %s (Total: $%.2f)?", vendor.Name, totalEstimate),
+				ConfirmationToken:    fmt.Sprintf("CONFIRM_CREATE_RFQ_%s_%d", vendor.ID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -394,13 +396,13 @@ func (o *OdooAdapter) ConfirmPurchaseOrder(ctx context.Context, orderID string, 
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: PO %s (%s) is ready to be confirmed.", order.OrderNo, order.VendorName),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CONFIRM_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Confirming PO %s will change state from '%s' to 'purchase' (Confirmed), committing $%.2f spend with %s.", order.OrderNo, order.State, order.AmountTotal, order.VendorName),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Confirming PO %s commits $%.2f with %s. Do you want to proceed?", order.OrderNo, order.AmountTotal, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("TOKEN_CONFIRM_PO_%s_%d", orderID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CONFIRM_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Confirming PO %s will change state from '%s' to 'purchase' (Confirmed), committing $%.2f spend with %s.", order.OrderNo, order.State, order.AmountTotal, order.VendorName),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Confirming PO %s commits $%.2f with %s. Do you want to proceed?", order.OrderNo, order.AmountTotal, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("TOKEN_CONFIRM_PO_%s_%d", orderID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -438,13 +440,13 @@ func (o *OdooAdapter) CancelPurchaseOrder(ctx context.Context, orderID string, d
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: RFQ %s cancellation preview.", order.OrderNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CANCEL_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Cancelling RFQ %s will void the draft request to %s.", order.OrderNo, order.VendorName),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("CAUTION: Cancel RFQ %s to %s? This voids the draft.", order.OrderNo, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("TOKEN_CANCEL_PO_%s_%d", orderID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CANCEL_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Cancelling RFQ %s will void the draft request to %s.", order.OrderNo, order.VendorName),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("CAUTION: Cancel RFQ %s to %s? This voids the draft.", order.OrderNo, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("TOKEN_CANCEL_PO_%s_%d", orderID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -476,13 +478,13 @@ func (o *OdooAdapter) ReceivePurchaseOrder(ctx context.Context, orderID string, 
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Full receipt preview for PO %s.", order.OrderNo),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "RECEIVE_PURCHASE_ORDER",
-				ImpactSummary:         fmt.Sprintf("Receiving PO %s will validate the full inbound picking and increase inventory stock (v1: full receipt only, no partials/backorders).", order.OrderNo),
-				RiskLevel:             domain.RiskHigh,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Receive ALL lines of PO %s from %s into stock? (Full receipt only.)", order.OrderNo, order.VendorName),
-				ConfirmationToken:     fmt.Sprintf("TOKEN_RECEIPT_%s_%d", orderID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "RECEIVE_PURCHASE_ORDER",
+				ImpactSummary:        fmt.Sprintf("Receiving PO %s will validate the full inbound picking and increase inventory stock (v1: full receipt only, no partials/backorders).", order.OrderNo),
+				RiskLevel:            domain.RiskHigh,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Receive ALL lines of PO %s from %s into stock? (Full receipt only.)", order.OrderNo, order.VendorName),
+				ConfirmationToken:    fmt.Sprintf("TOKEN_RECEIPT_%s_%d", orderID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -549,15 +551,15 @@ func (o *OdooAdapter) GetVendorBills(ctx context.Context, filter domain.VendorBi
 	}
 
 	var items []struct {
-		ID             int           `json:"id"`
-		  Name string `json:"name"`
-		 PartnerID any `json:"partner_id"`
-		InvoiceOrigin  interface{}   `json:"invoice_origin"`
-		  MoveType string `json:"move_type"`
-		AmountTotal    float64       `json:"amount_total"`
-		AmountResidual float64       `json:"amount_residual"`
-		  State string `json:"state"`
-		  DueDate string `json:"invoice_date_due"`
+		ID             int         `json:"id"`
+		Name           string      `json:"name"`
+		PartnerID      any         `json:"partner_id"`
+		InvoiceOrigin  interface{} `json:"invoice_origin"`
+		MoveType       string      `json:"move_type"`
+		AmountTotal    float64     `json:"amount_total"`
+		AmountResidual float64     `json:"amount_residual"`
+		State          string      `json:"state"`
+		DueDate        string      `json:"invoice_date_due"`
 	}
 	if err := json.Unmarshal(resRaw, &items); err != nil {
 		return nil, fmt.Errorf("failed to parse Odoo vendor bills: %w", err)
@@ -608,13 +610,13 @@ func (o *OdooAdapter) CreateVendorBill(ctx context.Context, orderID string, dryR
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Vendor bill preview for PO %s ($%.2f).", order.OrderNo, order.AmountTotal),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "CREATE_VENDOR_BILL",
-				ImpactSummary:         fmt.Sprintf("Drafting vendor bill from PO %s (Total: $%.2f, auto-copied lines, no edits in v1).", order.OrderNo, order.AmountTotal),
-				RiskLevel:             domain.RiskMedium,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Draft vendor bill for $%.2f from PO %s?", order.AmountTotal, order.OrderNo),
-				ConfirmationToken:     fmt.Sprintf("TOKEN_CREATE_BILL_%s_%d", orderID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "CREATE_VENDOR_BILL",
+				ImpactSummary:        fmt.Sprintf("Drafting vendor bill from PO %s (Total: $%.2f, auto-copied lines, no edits in v1).", order.OrderNo, order.AmountTotal),
+				RiskLevel:            domain.RiskMedium,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Draft vendor bill for $%.2f from PO %s?", order.AmountTotal, order.OrderNo),
+				ConfirmationToken:    fmt.Sprintf("TOKEN_CREATE_BILL_%s_%d", orderID, time.Now().Unix()),
 			},
 		}, nil
 	}
@@ -643,13 +645,13 @@ func (o *OdooAdapter) PostVendorBill(ctx context.Context, billID string, dryRun 
 			Success: true,
 			Message: fmt.Sprintf("DryRun simulation: Post vendor bill preview for %s.", billID),
 			DryRun: &domain.DryRunResult{
-				IsDryRun:              true,
-				Operation:             "POST_VENDOR_BILL",
-				ImpactSummary:         fmt.Sprintf("Posting vendor bill %s will finalize accounting entry (post-only in v1, no payment execution).", billID),
-				RiskLevel:             domain.RiskHigh,
-				RequiresConfirmation:  true,
-				ConfirmationPrompt:    fmt.Sprintf("Post vendor bill %s? (Posts journal only, no payment.)", billID),
-				ConfirmationToken:     fmt.Sprintf("TOKEN_POST_BILL_%s_%d", billID, time.Now().Unix()),
+				IsDryRun:             true,
+				Operation:            "POST_VENDOR_BILL",
+				ImpactSummary:        fmt.Sprintf("Posting vendor bill %s will finalize accounting entry (post-only in v1, no payment execution).", billID),
+				RiskLevel:            domain.RiskHigh,
+				RequiresConfirmation: true,
+				ConfirmationPrompt:   fmt.Sprintf("Post vendor bill %s? (Posts journal only, no payment.)", billID),
+				ConfirmationToken:    fmt.Sprintf("TOKEN_POST_BILL_%s_%d", billID, time.Now().Unix()),
 			},
 		}, nil
 	}
