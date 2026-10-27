@@ -20,6 +20,9 @@ import {
   ChatTurn, 
   ActivityEvent 
 } from "@/lib/ws";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { GenerativeDataTable } from "@/components/ai/generative-data-table";
 
 export default function DashboardAppShell() {
   const [activeTab, setActiveTab] = useState<"chat" | "approvals" | "integrations">("chat");
@@ -141,7 +144,7 @@ export default function DashboardAppShell() {
           <NavItem icon={Home} label="Home" tabId="home" />
           <NavItem icon={MessageSquare} label="Workspace Chat" tabId="chat" />
           <NavItem icon={CheckCircle} label="Pending Approvals" tabId="approvals" />
-          <NavItem icon={Blocks} label="Integrations" tabId="integrations" />
+          <NavItem icon={Blocks} label="Connectors" tabId="integrations" />
         </div>
         
         <div className="space-y-4 flex flex-col items-center">
@@ -200,7 +203,7 @@ export default function DashboardAppShell() {
           <h1 className="text-sm font-semibold tracking-tight">
             {activeTab === 'chat' && 'AI Workspace Chat'}
             {activeTab === 'approvals' && 'Pending Dry-Run Approvals'}
-            {activeTab === 'integrations' && 'ERP Connectors & Apps'}
+            {activeTab === 'integrations' && 'Connectors & Apps'}
           </h1>
           <div className="flex items-center gap-3">
              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-zinc-100">
@@ -234,7 +237,22 @@ export default function DashboardAppShell() {
                   </div>
                 )}
                 
-                {chatHistory.map(turn => (
+                {chatHistory.map(turn => {
+                  
+                  let generativePayload = null;
+                  let displayContent = turn.text || "";
+                  
+                  if (displayContent.includes('"ui_component":') || displayContent.includes('"ui_component" :')) {
+                     try {
+                        const match = displayContent.match(/\{[\s\S]*"ui_component"\s*:\s*"DATA_TABLE"[\s\S]*\}/);
+                        if (match) {
+                           generativePayload = JSON.parse(match[0]);
+                           displayContent = displayContent.replace(match[0], "").replace(/```json|```/g, "").trim();
+                        }
+                     } catch(e) { }
+                  }
+
+                  return (
                   <div key={turn.id} className={`flex ${turn.role === 'user' ? 'justify-end' : 'justify-start'} w-full`}>
                     <div className={`
                       max-w-[85%] lg:max-w-[70%] text-sm rounded-xl px-4 py-3 shadow-sm
@@ -243,7 +261,22 @@ export default function DashboardAppShell() {
                         : 'bg-white border border-zinc-200 text-zinc-800 rounded-tl-[4px]'
                       }
                     `}>
-                      {turn.text && <p className="leading-relaxed whitespace-pre-wrap">{turn.text}</p>}
+                      {generativePayload && generativePayload.ui_component === "DATA_TABLE" && (
+                         <div className="mb-3 w-full">
+                            <GenerativeDataTable 
+                               title={generativePayload.title || "Data View"} 
+                               columns={generativePayload.columns || []} 
+                               data={generativePayload.data || []} 
+                               systemSource={generativePayload.system_source || "Odoo v19"} 
+                            />
+                         </div>
+                      )}
+                      
+                      {displayContent && (
+                        <div className={`prose prose-sm prose-zinc whitespace-pre-wrap max-w-none ${turn.role === 'user' ? 'prose-invert' : ''}`}>
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>{displayContent}</ReactMarkdown>
+                        </div>
+                      )}
                       
                       {turn.role === 'assistant' && turn.pending && !turn.text && (
                         <div className="flex items-center gap-1.5 py-1 text-zinc-400 h-6">
@@ -254,16 +287,31 @@ export default function DashboardAppShell() {
                       )}
 
                       {/* Render UI Blocks if any */}
-                      { turn.blocks?.map((blk, idx) => (
-                          <div key={idx} className="mt-3 bg-zinc-50 border border-zinc-100 rounded-lg p-3 text-xs">
-                             <div className="text-[10px] uppercase font-bold tracking-widest text-zinc-400 mb-2 border-b border-zinc-200 pb-1">
+                      { turn.blocks?.map((blk, idx) => {
+                          if (blk.type === "table") {
+                             const props = blk.props as any;
+                             const rows = props.rows || [];
+                             const columns = rows.length > 0 ? Object.keys(rows[0]) : [];
+                             return (
+                               <div key={idx} className="my-3 w-[calc(100vw-300px)] min-w-[500px] max-w-full">
+                                  <GenerativeDataTable 
+                                     title={props.title || `Retrieved ${rows.length} record(s).`} 
+                                     columns={columns} 
+                                     data={rows} 
+                                  />
+                               </div>
+                             );
+                          }
+                          return (
+                            <div key={idx} className="mt-3 bg-zinc-50 border border-zinc-100 rounded-lg p-3 text-xs">
+                               <div className="text-[10px] uppercase font-bold tracking-widest text-zinc-400 mb-2 border-b border-zinc-200 pb-1">
                                Dynamic UI: {blk.type}
                              </div>
                              <pre className="font-mono text-[10px] overflow-auto text-zinc-600">
                                {JSON.stringify(blk.props, null, 2)}
                              </pre>
                           </div>
-                      ))}
+                      )})}
 
                       {turn.error && (
                          <div className="mt-2 text-xs text-red-500 font-medium bg-red-50 p-2 rounded border border-red-100">
@@ -272,7 +320,7 @@ export default function DashboardAppShell() {
                       )}
                     </div>
                   </div>
-                ))}
+                )})}
               </div>
 
               {/* Chat Input */}
@@ -311,7 +359,7 @@ export default function DashboardAppShell() {
           {/* TAB: Integrations Placeholder */}
           {activeTab === 'integrations' && (
             <div className="p-8 h-full bg-[#fdfdfd] z-10 relative overflow-y-auto">
-               <h2 className="text-xl font-bold tracking-tight mb-6">ERP Connectors & Apps</h2>
+               <h2 className="text-xl font-bold tracking-tight mb-6">Connectors & Apps</h2>
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                  {[
                    { name: "Odoo v19", status: "Connected", code: "odoo_19", icon: "📦" },
