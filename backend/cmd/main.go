@@ -20,6 +20,15 @@ import (
 	"erpagent-backend/middleware"
 )
 
+// fatalInProduction prevents a production process from silently running on
+// in-memory stores after a database or cache outage.
+func fatalInProduction(cfg *config.Config, format string, args ...any) {
+	if cfg.Environment == "production" {
+		log.Fatalf(format, args...)
+	}
+	log.Printf(format, args...)
+}
+
 func corsMiddleware(cfg *config.Config) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -71,7 +80,7 @@ func main() {
 	// Tenant/conversation travel via query params (browsers can't set WS headers).
 	var chatStore realtime.Store = realtime.NewMemoryStore()
 	if rs, err := realtime.NewRedisStore(cfg.RedisURL); err != nil {
-		log.Printf("Redis unavailable at %s (%v); using in-memory chat state", cfg.RedisURL, err)
+		fatalInProduction(cfg, "Redis unavailable at %s (%v); refusing to use in-memory chat state", cfg.RedisURL, err)
 	} else {
 		chatStore = rs
 	}
@@ -80,14 +89,14 @@ func main() {
 	// Falls back to in-memory stores when PG is unreachable (local dev).
 	pg, pgErr := database.OpenPostgres(cfg)
 	if pgErr != nil {
-		log.Printf("Postgres unavailable (%v); using in-memory audit + connectors", pgErr)
+		fatalInProduction(cfg, "Postgres unavailable (%v); refusing to use in-memory stores", pgErr)
 	}
 
 	// Immutable audit trail (locked Q8).
 	var auditStore audit.Store = audit.NewMemoryStore()
 	if pg != nil {
 		if ps, err := audit.NewPostgresStore(pg); err != nil {
-			log.Printf("Audit migrate failed (%v); using in-memory audit trail", err)
+			fatalInProduction(cfg, "Audit migrate failed (%v)", err)
 		} else {
 			auditStore = ps
 		}
@@ -97,7 +106,7 @@ func main() {
 	var connStore connectors.Store = connectors.NewMemoryStore()
 	if pg != nil {
 		if cs, err := connectors.NewPostgresStore(pg); err != nil {
-			log.Printf("Connectors migrate failed (%v); using in-memory connectors", err)
+			fatalInProduction(cfg, "Connectors migrate failed (%v)", err)
 		} else {
 			connStore = cs
 		}
@@ -109,7 +118,7 @@ func main() {
 	var authStore auth.Store = auth.NewMemoryStore()
 	if pg != nil {
 		if as, err := auth.NewPostgresStore(pg); err != nil {
-			log.Printf("Auth migrate failed (%v); using in-memory accounts", err)
+			fatalInProduction(cfg, "Auth migrate failed (%v)", err)
 		} else {
 			authStore = as
 		}
@@ -119,7 +128,7 @@ func main() {
 	var historyStore chathistory.Store = chathistory.NewMemoryStore()
 	if pg != nil {
 		if hs, err := chathistory.NewPostgresStore(pg); err != nil {
-			log.Printf("Chat history migrate failed (%v); using in-memory history", err)
+			fatalInProduction(cfg, "Chat history migrate failed (%v)", err)
 		} else {
 			historyStore = hs
 		}
@@ -129,7 +138,7 @@ func main() {
 	var llmStore llmsettings.Store = llmsettings.NewMemoryStore()
 	if pg != nil {
 		if ls, err := llmsettings.NewPostgresStore(pg, cfg.SettingsEncryptionKey); err != nil {
-			log.Printf("LLM settings migrate failed (%v); using in-memory settings", err)
+			fatalInProduction(cfg, "LLM settings migrate failed (%v)", err)
 		} else {
 			llmStore = ls
 		}
