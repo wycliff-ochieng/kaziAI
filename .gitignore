@@ -1,4 +1,8 @@
 *.md
+!/README.md
+!/SETUP.md
+!/TESTING.md
+!/INTEGRATION.md
 __pycache__/
 node_modules/
 .venv/
